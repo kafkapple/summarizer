@@ -7,13 +7,46 @@ from summarizer import BaseSummarizer#, TextSummarizer, VideoSummarizer
 from logger import Pocket2Notion, YouTube2Notion, Raindrop2Notion
 from utils import Utils
 import logging
+import argparse
 logging.basicConfig(level=logging.INFO)
 utils = Utils()
 
+def parse_arguments():
+    parser = argparse.ArgumentParser(description='콘텐츠 요약 도구')
+    
+    # 소스 관련 인자
+    parser.add_argument('--source', type=str, required=True,
+                        choices=['youtube', 'pocket', 'raindrop'],
+                        help='요약할 콘텐츠 소스 선택')
+    parser.add_argument('--playlist_url', type=str,
+                        help='YouTube 재생목록 URL')
+    parser.add_argument('--tags', nargs='+', default=['_untagged_'],
+                        help='Pocket/Raindrop 태그 필터')
+
+    # 요약 옵션
+    parser.add_argument('--keywords', action='store_true', default=True,
+                        help='키워드 추출 포함')
+    parser.add_argument('--no-keywords', action='store_false', dest='keywords',
+                        help='키워드 추출 비활성화')
+    
+    parser.add_argument('--full-text', action='store_true', default=False,
+                        help='전체 텍스트 포함')
+    parser.add_argument('--no-full-text', action='store_false', dest='full_text',
+                        help='전체 텍스트 제외')
+    
+    parser.add_argument('--chapters', action='store_true', default=True,
+                        help='챕터별 요약 활성화')
+    parser.add_argument('--no-chapters', action='store_false', dest='chapters',
+                        help='챕터별 요약 비활성화')
+    
+    parser.add_argument('--verbose', action='store_true', default=False,
+                        help='상세 로그 출력')
+    
+    return parser.parse_args()
+
 @utils.timeit
-def summarize_youtube(config, summarizer, log_youtube):
+def summarize_youtube(config, summarizer, log_youtube, playlist_url):
     youtube = YouTube(config)
-    playlist_url = 'https://youtube.com/playlist?list=PLuLudIpu5Viluk0AXnWT1nC4-IurR2d6-&si=iBYgrhtJiGNHQZbt'
     id = youtube.parse_youtube_url(playlist_url)
     if id[1]:
         videos = youtube.fetch_playlist_videos(id[0])
@@ -87,35 +120,35 @@ def summarize_web_text(processed_items, summarizer, extractor, logger, tags):
             print(f"아이템 처리 중 오류 발생 ({item['url']}): {str(e)}")
             continue
     #summarize_text(config, df_raindrop, texts, summarizer, log_raindrop, config.NOTION_DB_RAINDROP_ID)
+
 def main():
+    args = parse_arguments()
     config = Config()
+    
+    # Config 객체에 실행 시 설정 적용
+    config.update_runtime_settings(
+        keywords=args.keywords,
+        full_text=args.full_text,
+        chapters=args.chapters
+    )
+    
     summarizer = BaseSummarizer(config)
-    log_youtube = YouTube2Notion(config)
     
-    #summarize_youtube(config, summarizer, log_youtube)
-#log_raindrop = Raindrop2Notion(config)
-    pocket = PocketClient(config)
-    extractor = WebContent(config)
-    print("1. 설정 및 인스턴스 초기화 완료")
-# 2. Pocket2Notion 인스턴스 생성 및 초기화
-
-    logger = Pocket2Notion(config, verbose=True)
-    logger.initialize(pocket)
-    logger.change_id(config.NOTION_DB_POCKET_ID)
+    if args.source == 'youtube':
+        if not args.playlist_url:
+            raise ValueError("YouTube 소스 선택 시 --playlist_url 필수")
+        log_youtube = YouTube2Notion(config)
+        summarize_youtube(config, summarizer, log_youtube, args.playlist_url)
     
-    print("2. Pocket2Notion 초기화 완료")
-    #pocket_items = pocket.fetch_content(tags='_untagged_')
-    # 여러 태그가 있는 아이템 검색
-    tags = ['사회']
-    print(f"3. 처리할 태그: {tags}")
-    processed_items = pocket.fetch_content(tags=tags)
-    summarize_web_text(processed_items, summarizer, extractor, logger, tags)
-    #
-    # 2. 각 아이템별 순차 처리
-    
-
+    elif args.source == 'pocket':
+        pocket = PocketClient(config)
+        extractor = WebContent(config)
+        logger = Pocket2Notion(config, verbose=args.verbose)
+        logger.initialize(pocket)
+        logger.change_id(config.NOTION_DB_POCKET_ID)
         
-
+        processed_items = pocket.fetch_content(tags=args.tags)
+        summarize_web_text(processed_items, summarizer, extractor, logger, args.tags)
 
 if __name__ == "__main__":
     main()

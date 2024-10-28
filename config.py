@@ -6,43 +6,12 @@ load_dotenv()
 
 class Config:
     def __init__(self):
-        # 기존 설정들...
-        # CLI 인자 파싱
-        parser = argparse.ArgumentParser(description='Text Summarization Configuration')
+        # 기본 설정값
+        self.INCLUDE_KEYWORDS = True
+        self.INCLUDE_FULL_TEXT = False
+        self.ENABLE_CHAPTERS = True
         
-        # 키워드 옵션
-        parser.add_argument('--keywords', action='store_true', default=True,
-                          help='Include keywords in the summary')
-        parser.add_argument('--no-keywords', action='store_false', dest='keywords',
-                          help='Exclude keywords from the summary')
-        
-        # 전체 텍스트 옵션
-        parser.add_argument('--full-text', action='store_true', default=False,
-                          help='Include full text in the summary')
-        parser.add_argument('--no-full-text', action='store_false', dest='full_text',
-                          help='Exclude full text from the summary')
-        
-        # 챕터 옵션
-        parser.add_argument('--chapters', action='store_true', default=True,
-                          help='Enable chapter-based summarization')
-        parser.add_argument('--no-chapters', action='store_false', dest='chapters',
-                          help='Disable chapter-based summarization')
-        
-        # 키워드 하이라이팅 옵션
-        parser.add_argument('--highlight-keywords', action='store_true', default=True,
-                          help='Highlight keywords in the text')
-        parser.add_argument('--no-highlight-keywords', action='store_false', 
-                          dest='highlight_keywords',
-                          help='Disable keyword highlighting')
-        # CLI 인자 파싱 및 설정 적용
-        args = parser.parse_args()
-        
-        # 기능 설정 초기화
-        self.INCLUDE_KEYWORDS = args.keywords
-        self.INCLUDE_FULL_TEXT = args.full_text
-        self.ENABLE_CHAPTERS = args.chapters
-        self.HIGHLIGHT_KEYWORDS = args.highlight_keywords
-
+        # 환경 변수 및 기타 설정...
         self.base_path =os.path.dirname(os.path.abspath(__file__))
         self.src_path = os.path.join(self.base_path, 'src')
         self.save_path = os.path.join(self.base_path, 'save')
@@ -88,9 +57,24 @@ class Config:
         print(f"Keywords Enabled: {self.INCLUDE_KEYWORDS}")
         print(f"Full Text Enabled: {self.INCLUDE_FULL_TEXT}")
         print(f"Chapters Enabled: {self.ENABLE_CHAPTERS}")
-        print(f"Keyword Highlighting: {self.HIGHLIGHT_KEYWORDS}")
-        print("==================\n")
     
+        
+    def update_runtime_settings(self, keywords=None, full_text=None, chapters=None):
+        """실행 시 설정 업데이트"""
+        if keywords is not None:
+            self.INCLUDE_KEYWORDS = keywords
+        if full_text is not None:
+            self.INCLUDE_FULL_TEXT = full_text
+        if chapters is not None:
+            self.ENABLE_CHAPTERS = chapters
+            
+        # 설정 로그 출력
+        print("\n=== Configuration ===")
+        print(f"Keywords Enabled: {self.INCLUDE_KEYWORDS}")
+        print(f"Full Text Enabled: {self.INCLUDE_FULL_TEXT}")
+        print(f"Chapters Enabled: {self.ENABLE_CHAPTERS}")
+        print("==================\n")
+
     # 공통 스키마 정의
     def create_schema():
         description_summary = "Provide summaries focusing on key details."

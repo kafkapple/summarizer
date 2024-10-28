@@ -394,6 +394,7 @@ class PocketClient(WebContent):
         1. 전체 아이템 목록 먼저 수집
         2. 각 아이템별로 순차적으로 콘텐츠 수집 및 요약
         """
+        # sort: newest, oldest, title, site
         # 1. 전체 아이템 목록 수집
         items = self._get_items_with_params(batch_size, state, detail_type, sort, offset, tags)
         processed_items = self.process_items(items)
@@ -401,7 +402,6 @@ class PocketClient(WebContent):
         print(f"총 {len(processed_items)}개의 아이템을 처리합니다.")
         return processed_items
         
-    
 
     def _fetch_single_content(self, item, max_retries=1):
         """단일 아이템의 웹 콘텐츠 수집"""
