@@ -24,13 +24,13 @@ from readability import Document
 import nltk
 nltk.download('punkt_tab')
 # Example usage:
-class MediaSource(ABC):
-    @abstractmethod
-    def fetch_content(self, identifier):
-        pass
-    # @abstractmethod
-    # def get_transcript(self, identifier):
-    #     pass
+# class MediaSource(ABC):
+#     @abstractmethod
+#     def fetch_content(self, identifier):
+#         pass
+#     # @abstractmethod
+#     # def get_transcript(self, identifier):
+#     #     pass
 
 class WebContent():
     def __init__(self, config):
@@ -445,9 +445,9 @@ class WebContent():
         try:
             # 기존 추출 로직
             for extractor in [
+                self.extract_text_diffbot,
                 self.extract_text_readability,
                 self.extract_text_newspaper,
-                self.extract_text_diffbot,
                 self.extract_text_soup
             ]:
                 try:
@@ -455,13 +455,14 @@ class WebContent():
                     text = content.get('text' , '')
                     text = self.clean_text(text)
                     meaningful = self.is_meaningful_content(text)
-
-                    if content and len(text) > 500 and meaningful:
+                    char_count = len(text)
+                    if content and char_count > 500 and meaningful:
                         # 텍스트 파일로 저장
                         filepath = self.save_extracted_text(content)
                         saved_path = filepath
                         if saved_path:
                             content['saved_file'] = saved_path
+                        content['char_count'] = char_count
                      
                         return content
                     else:
@@ -476,7 +477,7 @@ class WebContent():
             print(f"컨텐츠 추출 실패: {e}")
             return None
 
-class YouTube(MediaSource):
+class YouTube():#MediaSource):
     def __init__(self, config):
         self._init_youtube_client(config)
     
@@ -738,7 +739,7 @@ class PocketClient(WebContent):
         self.all_items = []
         print('#'*7+' PocketClient init '+ '#'*7)
 
-    def fetch_content(self, batch_size=500, state='all', detail_type='complete', sort='newest', offset=0, tags=None):
+    def fetch_items(self, batch_size=500, state='all', detail_type='complete', sort='newest', offset=0, tags=None):
         """
         1. 전체 아이템 목록 먼저 수
         2. 각 아이템별로 순차적으로 콘텐츠 수집 및 요약
@@ -746,7 +747,7 @@ class PocketClient(WebContent):
         # sort: newest, oldest, title, site
         # 1. 전체 아이템 목록 수집
         items = self._get_items_with_params(batch_size, state, detail_type, sort, offset, tags)
-        processed_items = self.process_items(items)
+        processed_items = self._process_items(items)
         
         print(f"총 {len(processed_items)}개의 아이템을 처리합니다.")
         return processed_items
@@ -854,7 +855,7 @@ class PocketClient(WebContent):
                 print(f'n: {len(self.all_items)}\n')
         return self.all_items
     
-    def process_items(self, items):
+    def _process_items(self, items):
         processed = []
         for item in items:
             processed_item = {
@@ -868,7 +869,7 @@ class PocketClient(WebContent):
                 'status': 'archived' if item.get('status') == '1' else 'unread',
                 'lang': item.get('lang'),
                 'word_count': item.get('word_count'),
-                'has_video': item.get('has_video')
+                #'has_video': item.get('has_video')
             }
             processed.append(processed_item)
             
@@ -882,113 +883,71 @@ class RaindropClient(WebContent):
         super().__init__(config)
         self.api_key = config.RAINDROP_TOKEN
         self.base_url = "https://api.raindrop.io/rest/v1/"
-        self.filename_collection = 'raindrop_collections.csv'
-        self.filename_item = 'raindrop_items.csv'
+        self.all_items = []
+        print('#'*7+' RaindropClient init '+ '#'*7)
 
-    def fetch_content(self, identifier):
-        """Raindrop API를 통해 아이템 가져오기"""
-        items = self._fetch_raindrop_items(identifier)
-        
-        # 각 아이템의 웹 컨텐츠 가져오기
-        for item in items:
-            try:
-                item['content'] = self.fetch_web_content(item['link'])
-            except Exception as e:
-                print(f"Error fetching content for {item['link']}: {e}")
-                item['content'] = None
-                
-        return items
+    def fetch_items(self, collection_name=None, tags=None, favorite=None):
+        """Raindrop API를 통해 아이템 목록화 및 주요 정보 획득"""
+        collection_id = self._get_collection_id_by_name(collection_name) if collection_name else None
+        params = {}
+        if tags:
+            params['tag'] = tags
+        if favorite is not None:
+            params['favorite'] = favorite
 
-    def _fetch_raindrop_items(self, identifier):
-        """Raindrop API에서 아이템 가져오기"""
-        url = f"{self.base_url}raindrops/{identifier}"
+        items = self._get_items(collection_id, params)
+        processed_items = self._process_items(items)
+        print(f"총 {len(processed_items)}개의 아이템을 처리합니다.")
+        return processed_items
+
+    def _get_collection_id_by_name(self, collection_name):
+        """컬렉션 이름으로 컬렉션 ID를 가져옵니다."""
+        url = f"{self.base_url}collections"
         response = requests.get(url, headers={"Authorization": f"Bearer {self.api_key}"})
+        response.raise_for_status()
+        collections = response.json().get('items', [])
+        
+        for collection in collections:
+            if collection.get('title') == collection_name:
+                return collection.get('_id')
+        
+        print(f"Collection '{collection_name}' not found.")
+        return None
+
+    def _get_items(self, collection_id, params):
+        """Raindrop API에서 아이템 가져오기"""
+        if collection_id:
+            url = f"{self.base_url}raindrops/{collection_id}"
+        else:
+            url = f"{self.base_url}raindrops"
+
+        response = requests.get(url, headers={"Authorization": f"Bearer {self.api_key}"}, params=params)
         response.raise_for_status()
         return response.json().get('items', [])
 
-    def scrape_save(self):
-        ## Export result
-        bookmarks = self.get_bookmarks()
-        collections = self.get_collections()
-        items = self.get_item_from_collection(collections)
-        try:
-            Utils.save_file(collections, self.filename_collection)
-            Utils.save_file(items, self.filename_item)
-        except:
-            print('save error')
- 
-    def get_collections(self):
-        url = self.base_url +"collections"
-        collections = self.get_response(url)
-
-        print('Collections: ', len(collections))
-        results = []
-        for collect in collections:
-            dict_collect = {
-                'title': collect['title'],
-                'id': collect['_id'],
-                'count': collect['count'],
-                'expanded': collect['expanded'],
-                #'access': collect['access'],
-                'parent':''
-                }
-
-            print(dict_collect)
-            results.append(dict_collect)
-
-        collections_child = self.get_child_collections()
-
-        results+=collections_child
-        return results
-
-    def get_child_collections(self):
-        url = self.base_url +"collections/childrens"
-        collections = self.get_response(url)
-        print('Collections: ', len(collections))
-        results = []
-        for collect in collections:
-            dict_collect = {
-                'title': collect['title'],
-                'id': collect['_id'],
-                'count': collect['count'],
-                'expanded': collect['expanded'],
-               # 'access': collect['access'],
-                'parent':collect['parent']
-                }
-            try: 
-                dict_collect['parent'] =collect['parent']['$ref']+ '_'+str(collect['parent']['$id'])
-            except:
-                print('parent parsing error.')
-            print(dict_collect)
-            results.append(dict_collect)
-        return results
+    def _process_items(self, items):
+        """아이템의 주요 정보 처리"""
+        processed = []
         
-    def get_item_from_collection(self, collections):
-        items = []
-        for collect in tqdm(collections):
-            id = collect['id']
-            url = self.base_url+f'raindrops/{id}'
-            collect_items = self.get_response(url)
-            #collect_items = self.get_item_from_collection(collect['id'])
-            print('Items in the collection: ', len(collect_items))
-            for item in tqdm(collect_items):
-                id_item = item['_id']
-                url = self.base_url +"raindrop/{id_item}"
-                item_info = self.get_response(url)
-                dict_item ={
-                    'collection': collect['title'],
-                    'title': item['title'],
-                    'type': item['type'],
-                    'excerpt': item['excerpt'],
-                    'note': item['note'],
-                    'link': item['link'],
-                    'id': id_item,
-                    'cover': item['cover']
-                }
-                items.append(dict_item)
-        return items
-    
-
+        
+        for item in items:
+            created_date_str = item.get('created', 'No Date')
+            created_date = datetime.fromisoformat(created_date_str.replace('Z', '+00:00'))
+            
+            processed_item = {
+                'title': item.get('title', 'No title'),
+                'url': item.get('link'),
+                'excerpt': item.get('excerpt'),
+                'time_added': created_date.isoformat(),
+                'tags': item.get('tags', []),
+                'favorite': item.get('important', False),
+                'status': item.get('status', 'Unknown'),
+                'lang': item.get('language', 'Unknown'),
+                'collection': item.get('collection', {}).get('title', 'Unknown'),
+                'source': item.get('domain', 'Unknown')
+            }
+            processed.append(processed_item)
+        return processed
 
 #python -c "from pocket_sync import get_pocket_auth_token; get_pocket_auth_token()"
 

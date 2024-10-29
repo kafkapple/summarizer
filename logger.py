@@ -6,6 +6,9 @@ from typing import List, Dict, Optional
 import time
 import random   
 
+def sanitize_select_option(option):
+    # 쉼표를 제거하거나 다른 문자로 대체
+    return option.replace(',', ' ')
 class NotionBase:
     def __init__(self, config, verbose=False, quiet=False):
         self.config = config
@@ -167,11 +170,14 @@ class NotionBase:
     def common_properties(self, data):
         playlist = data.get('playlist', '')
         print(playlist)
+        keywords = data.get('keywords', [])
+        sanitized_keywords = [ sanitize_select_option(keyword) for keyword in keywords]
+        
         properties = {
-            "Title": {"title": [{"text": {"content": data.get('title', '')}}]},
-            "URL": {"url": data.get('url', '')},
+            "Title": {"title": [{"text": {"content": data.get('title', 'Unknwon')}}]},
+            "URL": {"url": data.get('url', 'Unknown')},
             "GPT Model": {"select": {"name": self.config.GPT_MODEL}},
-            "Keywords": {"multi_select": [{"name": keyword} for keyword in data.get('keywords', [])]},
+            "Keywords": {"multi_select": [{"name": keyword} for keyword in sanitized_keywords ]},
            # "Channel": {"rich_text": [{"text": {"content": data.get('channel', '')}}]},
         }
         # Channel, Like Count, Comment Count, One Sentence Summary 
@@ -272,28 +278,17 @@ class NotionBase:
 
     
 class Pocket2Notion(NotionBase):
-    def __init__(self, config, verbose=False, quiet=True):
+    def __init__(self, config, pocket_client, verbose=False):
         """
         Pocket2Notion 초기화
         Args:
             config: 설정 객체 (NOTION_TOKEN, NOTION_DATABASE_ID 등 포함)
             verbose: 상세 로깅 여부
-            quiet: 로깅 최소화 여부
         """
-        super().__init__(config, verbose, quiet)
-        self.pocket_client = None
-    
-        
-    def initialize(self, pocket_client):
-        """
-        Pocket 클라이언트와 Summarizer 설정
-        Args:
-            pocket_client: PocketClient 인스턴스
-            summarizer: Summarizer 인스턴스
-        """
+        super().__init__(config, verbose)
         self.pocket_client = pocket_client
         
-    def save_to_notion_pocket(self, data):
+    def save_to_notion_text(self, data):
         """
         Pocket 아이템을 Notion에 저장
         Args:
@@ -311,7 +306,7 @@ class Pocket2Notion(NotionBase):
                 "Language": {"select": {"name": data.get('lang', 'unknown')}},
                 "Favorite": {"select": {"name": str(data.get('favorite', False))}},
                 "Status": {"select": {"name": data.get('status', 'unread')}},
-                "Video": {"select": {"name": str(data.get('has_video', False))}},
+                #"Video": {"select": {"name": str(data.get('has_video', False))}},
                 "Method": {"select": {"name": data.get('method', 'unknown')}},
                 "Tags": {"multi_select": [{"name": topic} for topic in data.get('tags', [])]},
                 "Source": {"select": {"name": data.get('source_info', 'unknown')}},
@@ -330,15 +325,49 @@ class Pocket2Notion(NotionBase):
                 print(f"Error saving to Notion: {str(e)}\nSave {data.get('title', 'Untitled')}.pkl")
             raise
             
-
 class Raindrop2Notion(NotionBase):
-    def save_to_notion_raindrop(self, data):
-        properties = self.common_properties(data)
-        properties.update({
-            "Collection": {"select": {"name": data['collection']}}
-        })
-        children = self.organize_summary(data)
-        self.save_to_notion(data, properties, children)
+    def __init__(self, config, raindrop_client, verbose=False):
+        
+        super().__init__(config, verbose)
+        self.raindrop_client = raindrop_client
+        
+    def save_to_notion_text(self, data):
+        """
+        Args:
+            data: 처리된 Pocket 아이템 데이터
+        """
+        try:
+            children = self.organize_summary(data)
+            properties = self.common_properties(data)
+            
+            # Pocket 특화 properties 추가
+            properties.update({
+                "Excerpt": {"rich_text": [{"text": {"content": data.get('excerpt', '')[:2000]}}]},
+                "Word count": {"number": int(data.get('word_count', 0))},
+                "Date": {"date": {"start": data.get('time_added', '')}},
+                "Language": {"select": {"name": data.get('lang', 'unknown')}},
+                "Favorite": {"select": {"name": str(data.get('favorite', False))}},
+                "Status": {"select": {"name": data.get('status', 'unread')}},
+                #"Video": {"select": {"name": str(data.get('has_video', False))}},
+                "Method": {"select": {"name": data.get('method', 'unknown')}},
+                "Tags": {"multi_select": [{"name": topic} for topic in data.get('tags', [])]},
+                "Source": {"select": {"name": data.get('source_info', 'unknown')}},
+                "Collection": {"select": {"name": data['collection']}}
+
+            })
+            
+            if self.verbose:
+                print(f"Saving to Notion: {data.get('title', 'Untitled')}")
+            self.save_to_notion(data, properties, children)
+            
+        except Exception as e:
+            import pickle
+            with open(f'{data.get("title", "Untitled")}.pkl', 'wb') as file:
+                pickle.dump(data, file)
+            if self.verbose:
+                print(f"Error saving to Notion: {str(e)}\nSave {data.get('title', 'Untitled')}.pkl")
+            raise
+
 
 class YouTube2Notion(NotionBase):
     def __init__(self, config, verbose=False, quiet=False):
@@ -365,7 +394,7 @@ class YouTube2Notion(NotionBase):
         properties = self.common_properties(data)
         summary = data.get('summary', {})
         try:
-            keywords = [topic for topic in summary.get('keywords_original', '')]
+            keywords = [topic for topic in summary.get('keywords', '')]
         except:
             keywords = []
         properties.update({
