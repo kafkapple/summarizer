@@ -4,10 +4,8 @@ from openai import OpenAI
 from langdetect import detect
 from deep_translator import GoogleTranslator
 from typing import List, Dict, Optional
-import tiktoken
 import re
-from utils import Utils
-
+from fetch import TextProcessor
 class BaseSummarizer:
     def __init__(self, config, verbose=True):
         self.config = config
@@ -35,8 +33,8 @@ class BaseSummarizer:
         self.MAX_CHUNKS_PER_CHAPTER =  6  # 한 챕터당 최대 청크 수
 
         print( '\n'+'#'*7 +' Initialization of Summarizer ' +'#'*7+ f"\nGPT 모델 = {self.gpt_model}\n초기화: 대상 언어 = {self.output_language}")
-        self.system_token = Utils.num_tokens_from_string(self.system_content, self.gpt_model)
-        self.json_token = Utils.num_tokens_from_string(json.dumps(self.json_function_full), self.gpt_model)
+        self.system_token = TextProcessor.num_tokens_from_string(self.system_content, self.gpt_model)
+        self.json_token = TextProcessor.num_tokens_from_string(json.dumps(self.json_function_full), self.gpt_model)
         self.fixed_token = self.system_token + self.json_token
 
         self.prompt_token = self.max_token - self.system_token - self.json_token - self.response_token  
@@ -45,10 +43,10 @@ class BaseSummarizer:
     
     def summarize(self, text: str, title: str) -> Optional[Dict]:
         try:
-            processed_text = Utils.preprocess_text(text)
+            processed_text = TextProcessor.preprocess_text(text)
             self.source_lang = detect(processed_text)
             print(f'Prompt Token per chunk: {self.prompt_token}')
-            chunks = Utils.split_text_into_chunks(text=processed_text, max_length=self.prompt_token, by_token=True, gpt_model=self.gpt_model)
+            chunks = TextProcessor.split_text_into_chunks(text=processed_text, max_length=self.prompt_token, by_token=True, gpt_model=self.gpt_model)
             n_chunks = len(chunks)
             print(f'청크 수: {n_chunks}')
             
@@ -235,9 +233,9 @@ class BaseSummarizer:
     def get_chunk_summary(self, chunk: str, json_function: List[Dict] = None) -> Optional[Dict]:
         try:
             system_content = self.system_content + f'Respond in {self.output_language_full}'
-            system_token = Utils.num_tokens_from_string(system_content, self.gpt_model)
-            json_token = Utils.num_tokens_from_string(json.dumps(json_function), self.gpt_model)
-            prompt_token = Utils.num_tokens_from_string(chunk, self.gpt_model)
+            system_token = TextProcessor.num_tokens_from_string(system_content, self.gpt_model)
+            json_token = TextProcessor.num_tokens_from_string(json.dumps(json_function), self.gpt_model)
+            prompt_token = TextProcessor.num_tokens_from_string(chunk, self.gpt_model)
             
             # 여유있게 response token 설정
             response_token = self.max_token - system_token - json_token - prompt_token - self.buffer_token
@@ -263,7 +261,7 @@ class BaseSummarizer:
             result_json = response.choices[0].message.function_call.arguments
             if self.verbose:
                 print(f'System Token: {system_token + json_token} / Prompt Token: {self.prompt_token}\nResponse Token: {response_token}')
-                print(f'Actual Response Token: {Utils.num_tokens_from_string(result_json, self.gpt_model)}')
+                print(f'Actual Response Token: {TextProcessor.num_tokens_from_string(result_json, self.gpt_model)}')
             
             try:
                 result = json.loads(result_json)
@@ -455,9 +453,7 @@ class BaseSummarizer:
         #     print(f"Warning: Number of sections ({len(merged['sections'])}) does not match number of full texts ({len(merged['full_text'])})")
         
         return concat, merged#['sections']#, merged['keywords']#, merged["full_text"]
-    def clean_text(self, text: str) -> str:
-        """Remove unnecessary spaces from the text."""
-        return re.sub(r'\s+', ' ', text).strip()
+
     def translate_summary(self, summary: Dict):
         def translate_text(text: str, translator) -> str:
             """Translate text in chunks of 4500 characters."""
@@ -471,7 +467,7 @@ class BaseSummarizer:
             for i in range(0, len(text), max_length):
                 chunk = text[i:i + max_length]
                 translated_text += translator.translate(chunk)
-            return self.clean_text(translated_text)
+            return TextProcessor.clean_text(translated_text)
 
         try:
             if not summary:  # summary가 None인 경우 처리
@@ -515,52 +511,7 @@ class BaseSummarizer:
             print(f"번역 중 오류 발생: {e}")
             print(f"Summary 구조: {summary}")  # 디버깅을 위한 출력
             return summary  # 오류 발생시 원본 반환
-    # def translate_summary(self, summary: Dict):
-    #     def translate_text(text: str, translator) -> str:
-    #         """Translate text in chunks of 4500 characters."""
-    #         max_length = self.max_translate_length
-    #         translated_text = ""
-    #         for i in range(0, len(text), max_length):
-    #             chunk = text[i:i + max_length]
-    #             translated_text += translator.translate(chunk)
-    #         return self.clean_text(translated_text)
-
-    #     try:
-    #         translator = GoogleTranslator(source=self.source_lang, target=self.output_language)
-            
-    #         # 섹션 번역
-    #         summary['sections'] = [
-    #             {
-    #                 'title': translate_text(section.get('title', ''), translator),
-    #                 'summary': [translate_text(s, translator) for s in section.get('summary', [])]
-    #             }
-    #             for section in summary.get('sections', [])
-    #         ]
-            
-    #         # 전체 요약 번역
-    #         summary['full_summary'] = [translate_text(s, translator) for s in summary.get('full_summary', [])]
-    #         summary['keywords'] = [{
-    #             'term': translate_text(section.get('term', ''), translator),
-    #             #'context': translate_text(section.get('context', ''), translator),
-    #             }
-    #             for section in summary.get('keywords', [])
-    #         ]
-
-    #         # 한 문장 요약 번역
-    #         one_sentence = summary.get('one_sentence_summary', '')
-            
-    #         if isinstance(one_sentence, str):
-    #             print(f"Warning: Unexpected one_sentence_summary type (list): {type(one_sentence)}")
-    #         elif isinstance(one_sentence, list):
-    #             one_sentence = ''.join(one_sentence)
-    #         else:
-    #             print(f"Warning: Unexpected one_sentence_summary type: {type(one_sentence)}")
-                
-    #         summary['one_sentence_summary'] = translate_text(one_sentence, translator)
-            
-    #         return summary
-    #     except Exception as e:
-    #         print(f"번역 중 오류 발생: {e}")
+    
     def format_summary(self, merged_summary: Dict, processed_text: str) -> Dict:
         try:
             one_sentence = merged_summary.get('one_sentence_summary', '')
