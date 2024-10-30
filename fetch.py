@@ -21,8 +21,11 @@ import re
 import requests
 from newspaper import Article, Config
 from readability import Document
-import nltk
-nltk.download('punkt_tab')
+import tiktoken
+from typing import List, Union, Dict
+
+# import nltk
+# nltk.download('punkt_tab')
 # Example usage:
 # class MediaSource(ABC):
 #     @abstractmethod
@@ -32,6 +35,195 @@ nltk.download('punkt_tab')
 #     # def get_transcript(self, identifier):
 #     #     pass
 
+from abc import ABC, abstractmethod
+
+class ContentFetcher(ABC):
+    @abstractmethod
+    def fetch_items(self, **kwargs):
+        pass
+    
+    @abstractmethod
+    def get_content(self, item):
+        pass
+
+class ContentProcessor(ABC):
+    @abstractmethod
+    def process_content(self, content: str) -> Dict:
+        pass
+
+class MockContentFetcher(ContentFetcher):
+    def __init__(self, mock_data: Dict):
+        self.mock_data = mock_data
+    
+    def fetch_items(self, **kwargs):
+        return self.mock_data.get('items', [])
+    
+    def get_content(self, item):
+        return self.mock_data.get('content', {})
+    
+class TextProcessor:
+    @staticmethod
+    def clean_text(raw_text):
+        """
+        Clean the extracted text by removing HTML tags and unnecessary whitespace.
+        
+        :param raw_text: str - Raw text containing HTML tags and unwanted characters.
+        :return: str - Cleaned text with only the main content.
+        """
+        # 1. Remove HTML tags using BeautifulSoup
+        soup = BeautifulSoup(raw_text, "html.parser")
+        text = soup.get_text(separator=" ")
+
+        # 2. Remove unwanted characters or patterns (e.g., extra spaces, newlines)
+        # Remove multiple spaces and newlines
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        return text
+    @staticmethod
+    def preprocess_text(text: Union[str, List[Dict[str, str]], List[str]], 
+                       remove_special_chars: bool = False, 
+                       to_lowercase: bool = False, 
+                       remove_numbers: bool = False,
+                       clean_tags: bool = True) -> str:
+        """
+        통합된 텍스트 전처리 함수
+        
+        Args:
+            text: 처리할 텍스트
+            remove_special_chars: 특수문자 제거 여부
+            to_lowercase: 소문자 변환 여부
+            remove_numbers: 숫자 제거 여부
+            clean_tags: [음악], (박수) 등의 태그 제거 여부
+        """
+        try:
+            if not text:
+                return ''
+                
+            # 리스트 처리
+            if isinstance(text, list):
+                if all(isinstance(item, dict) and 'text' in item for item in text):
+                    # 자막 딕셔너리 리스트 처리
+                    text_parts = []
+                    for entry in text:
+                        cleaned_text = entry['text'].strip()
+                        if clean_tags:
+                            cleaned_text = re.sub(r'\[.*?\]', '', cleaned_text)
+                            cleaned_text = re.sub(r'\(.*?\)', '', cleaned_text)
+                        
+                        if cleaned_text:
+                            if not cleaned_text[-1] in '.!?':
+                                cleaned_text += '.'
+                            text_parts.append(cleaned_text)
+                    text = ' '.join(text_parts)
+                else:
+                    text = ' '.join(str(item).strip() for item in text if str(item).strip())
+            
+            elif not isinstance(text, str):
+                raise ValueError("입력은 문자열 또는 리스트 형식이어야 합니다")
+
+            # 기본 전처리
+            text = text.strip()
+            text = ' '.join(text.split())
+            
+            # 선택적 전처리
+            if remove_special_chars:
+                text = re.sub(r'[^\w\s]', '', text)
+            if to_lowercase:
+                text = text.lower()
+            if remove_numbers:
+                text = re.sub(r'\d+', '', text)
+                
+            return text
+            
+        except Exception as e:
+            print(f"텍스트 전처리 중 오류 발생: {e}")
+            return ''
+    @staticmethod
+    def num_tokens_from_string(string: str, gpt_model: str) -> int: #encoding_name: str = "cl100k_base"
+        """Returns the number of tokens in a text string."""
+        #encoding = openai.Encoding.get_encoding(self.gpt_model)
+        #encoding = tiktoken.get_encoding(encoding_name)
+        if not isinstance(string, str):
+            print(f"Warning: Expected string, got {type(string)}. Converting to string.")
+            string = str(string)
+        encoding = tiktoken.encoding_for_model(gpt_model)
+        return len(encoding.encode(string))
+    @staticmethod
+    def split_text_into_chunks(text: str, max_length: int = 2000, by_token: bool = False, gpt_model: str = None) -> List[str]:
+        """
+        텍스트를 청크로 분할하는 공통 함수
+        
+        Args:
+            text (str): 분할할 텍스트
+            max_length (int): 청크당 최대 길이 (토큰 또는 문자)
+            by_token (bool): 토큰 기준 분할 여부
+        
+        Returns:
+            List[str]: 분할된 청크 리스트
+        """
+        if not text:
+            return []
+        
+        # 먼저 기본적인 문장 종결 부호로 시도
+        sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
+        
+        # 문장 종결 부호로 분리가 안 된 경우에만 다른 패턴 시도
+        if len(sentences) <= 1:
+            sentence_patterns = [
+                r'[\n]{2,}',             # 빈 줄
+                r'(?<=[;:])[\s\n]+',     # 세미콜론/콜론 뒤의 공백이나 줄바꿈
+                r'[\s]{2,}',             # 연속된 공백
+                r'(?<=[\,])[\s]+'        # 쉼표 뒤의 공백
+            ]
+            
+            current_text = text.strip()
+            for pattern in sentence_patterns:
+                sentences = [s.strip() for s in re.split(pattern, current_text) if s.strip()]
+                if len(sentences) > 1:
+                    break
+        
+        # 여전히 분리가 안 된 경우 단순 길이 기준 분할
+        if len(sentences) <= 1:
+            sentences = [text[i:i+max_length] for i in range(0, len(text), max_length)]
+        
+        # 청크 생성
+        chunks = []
+        current_chunk = ""
+        
+        for i in range(len(sentences)):
+            sentence = sentences[i].strip()
+            if not sentence:
+                continue
+                
+            potential_chunk = current_chunk + (" " if current_chunk else "") + sentence
+            
+            # 길이 체크 (토큰 또는 문자 기준)
+            if by_token:
+                current_length = TextProcessor.num_tokens_from_string(potential_chunk, gpt_model)  # 토큰 계산 함수 필요
+                length_exceeded = current_length >= max_length
+            else:
+                length_exceeded = len(potential_chunk) >= max_length
+            
+            if length_exceeded and current_chunk:
+                chunks.append(current_chunk.strip())
+                current_chunk = sentence
+            else:
+                current_chunk = potential_chunk
+        
+        if current_chunk:
+            chunks.append(current_chunk.strip())
+        
+        return chunks
+    
+    # @staticmethod
+    # def prep_text():
+    #     #Remove special characters (optional, uncomment if needed)
+    #     text = re.sub(r'[^\w\s]', '', text)
+    #     #Convert to lowercase (optional, uncomment if needed)
+    #     text = text.lower()
+    #     #Remove numbers (optional, uncomment if needed)
+    #     text = re.sub(r'\d+', '', text)
+    
 class WebContent():
     def __init__(self, config):
         self.config = config
@@ -272,22 +464,7 @@ class WebContent():
             return {}
     
 
-    def clean_text(self, raw_text):
-        """
-        Clean the extracted text by removing HTML tags and unnecessary whitespace.
-        
-        :param raw_text: str - Raw text containing HTML tags and unwanted characters.
-        :return: str - Cleaned text with only the main content.
-        """
-        # 1. Remove HTML tags using BeautifulSoup
-        soup = BeautifulSoup(raw_text, "html.parser")
-        text = soup.get_text(separator=" ")
-
-        # 2. Remove unwanted characters or patterns (e.g., extra spaces, newlines)
-        # Remove multiple spaces and newlines
-        text = re.sub(r'\s+', ' ', text).strip()
-        
-        return text
+    
 
     def _get_random_headers(self):
         """랜덤 User-Agent와 함께 요청 헤더 생성"""
@@ -453,7 +630,7 @@ class WebContent():
                 try:
                     content = extractor(url)
                     text = content.get('text' , '')
-                    text = self.clean_text(text)
+                    text = TextProcessor.clean_text(text)
                     meaningful = self.is_meaningful_content(text)
                     char_count = len(text)
                     if content and char_count > 500 and meaningful:
@@ -670,7 +847,7 @@ class YouTube():#MediaSource):
                         transcript = transcript_list.find_transcript([lang])
                         if transcript:
                             # Utils의 preprocess_text 사용
-                            return Utils.preprocess_text(transcript.fetch(), clean_tags=True)
+                            return TextProcessor.preprocess_text(transcript.fetch(), clean_tags=True)
                     except NoTranscriptFound:
                         continue
                 
@@ -678,14 +855,14 @@ class YouTube():#MediaSource):
                 try:
                     generated_transcripts = transcript_list.find_generated_transcript(['ko', 'en', 'ja', 'auto'])
                     if generated_transcripts:
-                        return Utils.preprocess_text(generated_transcripts.fetch())
+                        return TextProcessor.preprocess_text(generated_transcripts.fetch())
                 except NoTranscriptFound:
                     pass
                 
                 # 3. 사용 가능한 모든 자막 확인
                 for transcript in transcript_list:
                     try:
-                        return Utils.preprocess_text(transcript.fetch())
+                        return TextProcessor.preprocess_text(transcript.fetch())
                     except NoTranscriptFound:
                         continue
             
@@ -900,17 +1077,25 @@ class RaindropClient(WebContent):
         print(f"총 {len(processed_items)}개의 아이템을 처리합니다.")
         return processed_items
 
-    def _get_collection_id_by_name(self, collection_name):
+    def _get_collection_id_by_name(self, collection_name, collections=None):
         """컬렉션 이름으로 컬렉션 ID를 가져옵니다."""
-        url = f"{self.base_url}collections"
-        response = requests.get(url, headers={"Authorization": f"Bearer {self.api_key}"})
-        response.raise_for_status()
-        collections = response.json().get('items', [])
-        
+        if collections is None:
+            url = f"{self.base_url}collections"
+            response = requests.get(url, headers={"Authorization": f"Bearer {self.api_key}"})
+            response.raise_for_status()
+            collections = response.json().get('items', [])
+
         for collection in collections:
+            print(f"Checking collection: {collection.get('title')}")
             if collection.get('title') == collection_name:
                 return collection.get('_id')
-        
+            
+            # 하위 컬렉션이 있는 경우 재귀적으로 검색
+            if 'children' in collection:
+                child_id = self._get_collection_id_by_name(collection_name, collection['children'])
+                if child_id:
+                    return child_id
+
         print(f"Collection '{collection_name}' not found.")
         return None
 

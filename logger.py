@@ -1,45 +1,18 @@
 from notion_client import Client
-import requests
+#import requests
 from datetime import datetime
-import re
+
 from typing import List, Dict, Optional
-import time
-import random   
+#import time
+#import random   
 
-def sanitize_select_option(option):
-    # 쉼표를 제거하거나 다른 문자로 대체
-    return option.replace(',', ' ')
-class NotionBase:
-    def __init__(self, config, verbose=False, quiet=False):
-        self.config = config
-        self.client = Client(auth=self.config.NOTION_TOKEN)
-        self.database_id = self.config.NOTION_DATABASE_ID
-        self.keywords = []
-        self.verbose = verbose
-        self.quiet = quiet
-
-    def change_id(self, id):
-        self.database_id = id
-
-    def save_to_notion(self, data, properties, children=None):
-        try:
-            if children:
-                # 페이지를 생성하고 페이지 ID를 저장
-                response = self.client.pages.create(
-                    parent={"database_id": self.database_id},
-                    properties=properties,
-                    children=children  # children을 배열로 전달
-                )
-                page_id = response.get('id', '')
-                print(f"Summary for '{data['title']}' has been saved to Notion with page ID: {page_id}.\n")
-        except Exception as e:
-            print(f"Error saving to Notion: {e}")
-
-    # organize_summary 메소드 수정
-    def create_text_block(self, content: str, block_type: str = "paragraph", keywords: List[str] = None) -> Dict:
+# 2. NotionBlockBuilder 클래스 분리
+class NotionBlockBuilder:
+    @staticmethod
+    def create_text_block(content: str, block_type: str = "paragraph", keywords: List[str] = None) -> Dict:
         """키워드 강조가 포함된 텍스트 블록을 생성합니다."""
         if keywords:
-            rich_text = self.highlight_keywords(content, keywords)
+            rich_text = NotionBlockBuilder.highlight_keywords(content, keywords)
         else:
             rich_text = [{"type": "text", "text": {"content": content}}]
         
@@ -50,11 +23,11 @@ class NotionBase:
                 "rich_text": rich_text
             }
         }
-
-    def create_bulleted_list_item(self, content: str, keywords: List[str] = None) -> Dict:
+    @staticmethod
+    def create_bulleted_list_item(content: str, keywords: List[str] = None) -> Dict:
         """키워드 강조가 포함된 글머리 기호 항목을 생성합니다."""
         if keywords:
-            rich_text = self.highlight_keywords(content, keywords)
+            rich_text = NotionBlockBuilder.highlight_keywords(content, keywords)
         else:
             rich_text = [{"type": "text", "text": {"content": content}}]
         
@@ -65,144 +38,8 @@ class NotionBase:
                 "rich_text": rich_text
             }
         }
-
-    def organize_summary(self, data, heading='Section summary', contents='summary'):
-        chapter_blocks = []  # 챕터별 블록을 저장할 리스트
-        current_chapter_blocks = []  # 현재 챕터의 블록을 저장할 리스트
-
-        children = []  # children 리스트 초기화
-        
-        try:
-            # table_of_contents 블록을 children 리스트에 추가
-            children.append({"object": "block", "type": "table_of_contents", "table_of_contents": {}})
-            
-            if 'thumbnail' in data:
-                children.append({
-                    "object": "block",
-                    "type": "image",
-                    "image": {
-                        "type": "external",
-                        "external": {"url": data['thumbnail']}
-                    }
-                })
-
-            summary = data.get('summary', {})
-            keywords = []
-            if self.config.INCLUDE_KEYWORDS:
-                keywords = summary.get('keywords', [])
-
-            if isinstance(summary, dict):
-                chapters = summary.get('chapters', []) if self.config.ENABLE_CHAPTERS else []
-                
-                if 'sections' in summary:
-                    children.append(self.create_text_block("Detailed Section Summaries", "heading_1"))
-                    
-                    if chapters:
-                        current_chapter_idx = 0
-                        current_chapter = chapters[current_chapter_idx]
-                        
-                        for i, segment in enumerate(summary['sections']):
-                            # 새로운 챕터의 시작인지 확인
-                            while (current_chapter_idx < len(chapters) and 
-                                   i >= current_chapter['section_indices']['end']):
-                                current_chapter_idx += 1
-                                if current_chapter_idx < len(chapters):
-                                    current_chapter = chapters[current_chapter_idx]
-                            
-                            # 현재 섹션이 새로운 챕터의 시작이면 챕터 제목 추가
-                            if current_chapter_idx < len(chapters) and \
-                               i == current_chapter['section_indices']['start']:
-                                if current_chapter_blocks:
-                                    chapter_blocks.append(current_chapter_blocks)
-                                    current_chapter_blocks = []
-                                current_chapter_blocks.append(self.create_text_block(
-                                    f"{current_chapter_idx + 1}. {current_chapter['chapter_title']}",
-                                    "heading_1"
-                                ))
-                            
-                            # 섹션 추가
-                            if isinstance(segment, dict):
-                                # 섹션 제목
-                                current_chapter_blocks.append(self.create_text_block(
-                                    f'{i+1}. {segment.get("title", "")}',
-                                    "heading_2",
-                                    keywords if keywords else None
-                                ))
-                                
-                                # 섹션 내용
-                                summary_content = segment.get('summary', [])
-                                if isinstance(summary_content, list):
-                                    for item in summary_content:
-                                        current_chapter_blocks.append(self.create_bulleted_list_item(
-                                            item,
-                                            keywords if keywords else None
-                                        ))
-                                
-                                current_chapter_blocks.append(self.create_text_block(""))  # 빈 줄
-
-                    else:
-                        # 챕터가 없는 경우 섹션을 직접 children에 추가
-                        for i, segment in enumerate(summary['sections']):
-                            if isinstance(segment, dict):
-                                # 섹션 제목
-                                children.append(self.create_text_block(
-                                    f'{i+1}. {segment.get("title", "")}',
-                                    "heading_2",
-                                    keywords if keywords else None
-                                ))
-                                
-                                # 섹션 내용
-                                summary_content = segment.get('summary', [])
-                                if isinstance(summary_content, list):
-                                    for item in summary_content:
-                                        children.append(self.create_bulleted_list_item(
-                                            item,
-                                            keywords if keywords else None
-                                        ))
-                                
-                                children.append(self.create_text_block(""))  # 빈 줄
-
-        except Exception as e:
-            print(f'Error organizing summary: {e}')
-        
-        return chapter_blocks if chapters else children
-
-    def common_properties(self, data):
-        playlist = data.get('playlist', '')
-        print(playlist)
-        keywords = data.get('keywords', [])
-        sanitized_keywords = [ sanitize_select_option(keyword) for keyword in keywords]
-        
-        properties = {
-            "Title": {"title": [{"text": {"content": data.get('title', 'Unknwon')}}]},
-            "URL": {"url": data.get('url', 'Unknown')},
-            "GPT Model": {"select": {"name": self.config.GPT_MODEL}},
-            "Keywords": {"multi_select": [{"name": keyword} for keyword in sanitized_keywords ]},
-           # "Channel": {"rich_text": [{"text": {"content": data.get('channel', '')}}]},
-        }
-        # Channel, Like Count, Comment Count, One Sentence Summary 
-        # Published Date 처리
-        #published_date = data.get('published_date')
-        
-        summary = data.get('summary', {})
-        if isinstance(summary, dict):
-            full_summary = summary.get('full_summary', '')
-            if isinstance(full_summary, list):
-                full_summary = ' '.join(full_summary)
-            elif not isinstance(full_summary, str):
-                full_summary = str(full_summary)
-            
-            properties["Summary"] = {"rich_text": [{"text": {"content": full_summary[:2000]}}]}
-            
-            one_sentence_summary = summary.get('one_sentence_summary', '')
-            
-            if not isinstance(one_sentence_summary, str):
-                one_sentence_summary = str(one_sentence_summary)
-            properties["One Sentence Summary"] = {"rich_text": [{"text": {"content": one_sentence_summary[:2000]}}]}
-        
-        return properties
-
-    def highlight_keywords(self, text: str, keywords: List[str]) -> List[Dict]:
+    @staticmethod   
+    def highlight_keywords(text: str, keywords: List[str]) -> List[Dict]:
         """텍스트에서 키워드를 찾아 강조 표시를 추가합니다."""
         if not text or not keywords:
             return [{"type": "text", "text": {"content": text or ""}}]
@@ -275,6 +112,173 @@ class NotionBase:
                 current_pos = next_pos
         
         return result
+
+class NotionBase:
+    def __init__(self, config, verbose=False, quiet=False):
+        self.config = config
+        self.client = Client(auth=self.config.NOTION_TOKEN)
+        self.database_id = self.config.NOTION_DATABASE_ID
+        self.keywords = []
+        self.verbose = verbose
+        self.quiet = quiet
+
+    def change_id(self, id):
+        self.database_id = id
+
+    def save_to_notion(self, data, properties, children=None):
+        try:
+            if children:
+                # 페이지를 생성하고 페이지 ID를 저장
+                response = self.client.pages.create(
+                    parent={"database_id": self.database_id},
+                    properties=properties,
+                    children=children  # children을 배열로 전달
+                )
+                page_id = response.get('id', '')
+                print(f"Summary for '{data['title']}' has been saved to Notion with page ID: {page_id}.\n")
+        except Exception as e:
+            print(f"Error saving to Notion: {e}")
+    @staticmethod
+    def sanitize_select_option(option):
+        # 쉼표를 제거하거나 다른 문자로 대체
+        return option.replace(',', ' ')
+    
+
+    def organize_summary(self, data, heading='Section summary', contents='summary'):
+        chapter_blocks = []  # 챕터별 블록을 저장할 리스트
+        current_chapter_blocks = []  # 현재 챕터의 블록을 저장할 리스트
+
+        children = []  # children 리스트 초기화
+        
+        try:
+            # table_of_contents 블록을 children 리스트에 추가
+            children.append({"object": "block", "type": "table_of_contents", "table_of_contents": {}})
+            
+            if 'thumbnail' in data:
+                children.append({
+                    "object": "block",
+                    "type": "image",
+                    "image": {
+                        "type": "external",
+                        "external": {"url": data['thumbnail']}
+                    }
+                })
+
+            summary = data.get('summary', {})
+            keywords = []
+            if self.config.INCLUDE_KEYWORDS:
+                keywords = summary.get('keywords', [])
+
+            if isinstance(summary, dict):
+                chapters = summary.get('chapters', []) if self.config.ENABLE_CHAPTERS else []
+                
+                if 'sections' in summary:
+                    children.append(NotionBlockBuilder.create_text_block("Detailed Section Summaries", "heading_1"))
+                    
+                    if chapters:
+                        current_chapter_idx = 0
+                        current_chapter = chapters[current_chapter_idx]
+                        
+                        for i, segment in enumerate(summary['sections']):
+                            # 새로운 챕터의 시작인지 확인
+                            while (current_chapter_idx < len(chapters) and 
+                                   i >= current_chapter['section_indices']['end']):
+                                current_chapter_idx += 1
+                                if current_chapter_idx < len(chapters):
+                                    current_chapter = chapters[current_chapter_idx]
+                            
+                            # 현재 섹션이 새로운 챕터의 시작이면 챕터 제목 추가
+                            if current_chapter_idx < len(chapters) and \
+                               i == current_chapter['section_indices']['start']:
+                                if current_chapter_blocks:
+                                    chapter_blocks.append(current_chapter_blocks)
+                                    current_chapter_blocks = []
+                                current_chapter_blocks.append(NotionBlockBuilder.create_text_block(
+                                    f"{current_chapter_idx + 1}. {current_chapter['chapter_title']}",
+                                    "heading_1"
+                                ))
+                            
+                            # 섹션 추가
+                            if isinstance(segment, dict):
+                                # 섹션 제목
+                                current_chapter_blocks.append(NotionBlockBuilder.create_text_block(
+                                    f'{i+1}. {segment.get("title", "")}',
+                                    "heading_2",
+                                    keywords if keywords else None
+                                ))
+                                
+                                # 섹션 내용
+                                summary_content = segment.get('summary', [])
+                                if isinstance(summary_content, list):
+                                    for item in summary_content:
+                                        current_chapter_blocks.append(NotionBlockBuilder.create_bulleted_list_item(
+                                            item,
+                                            keywords if keywords else None
+                                        ))
+                                
+                                current_chapter_blocks.append(NotionBlockBuilder.create_text_block(""))  # 빈 줄
+
+                    else:
+                        # 챕터가 없는 경우 섹션을 직접 children에 추가
+                        for i, segment in enumerate(summary['sections']):
+                            if isinstance(segment, dict):
+                                # 섹션 제목
+                                children.append(NotionBlockBuilder.create_text_block(
+                                    f'{i+1}. {segment.get("title", "")}',
+                                    "heading_2",
+                                    keywords if keywords else None
+                                ))
+                                
+                                # 섹션 내용
+                                summary_content = segment.get('summary', [])
+                                if isinstance(summary_content, list):
+                                    for item in summary_content:
+                                        children.append(NotionBlockBuilder.create_bulleted_list_item(
+                                            item,
+                                            keywords if keywords else None
+                                        ))
+                                
+                                children.append(NotionBlockBuilder.create_text_block(""))  # 빈 줄
+
+        except Exception as e:
+            print(f'Error organizing summary: {e}')
+        
+        return chapter_blocks if chapters else children
+
+    def common_properties(self, data):
+        playlist = data.get('playlist', '')
+        print(playlist)
+        keywords = data.get('keywords', [])
+        sanitized_keywords = [NotionBase.sanitize_select_option(keyword) for keyword in keywords]
+        
+        properties = {
+            "Title": {"title": [{"text": {"content": data.get('title', 'Unknwon')}}]},
+            "URL": {"url": data.get('url', 'Unknown')},
+            "GPT Model": {"select": {"name": self.config.GPT_MODEL}},
+            "Keywords": {"multi_select": [{"name": keyword} for keyword in sanitized_keywords ]},
+           # "Channel": {"rich_text": [{"text": {"content": data.get('channel', '')}}]},
+        }
+        # Channel, Like Count, Comment Count, One Sentence Summary 
+        # Published Date 처리
+        #published_date = data.get('published_date')
+        
+        summary = data.get('summary', {})
+        if isinstance(summary, dict):
+            full_summary = summary.get('full_summary', '')
+            if isinstance(full_summary, list):
+                full_summary = ' '.join(full_summary)
+            elif not isinstance(full_summary, str):
+                full_summary = str(full_summary)
+            
+            properties["Summary"] = {"rich_text": [{"text": {"content": full_summary[:2000]}}]}
+            
+            one_sentence_summary = summary.get('one_sentence_summary', '')
+            
+            if not isinstance(one_sentence_summary, str):
+                one_sentence_summary = str(one_sentence_summary)
+            properties["One Sentence Summary"] = {"rich_text": [{"text": {"content": one_sentence_summary[:2000]}}]}
+        
+        return properties
 
     
 class Pocket2Notion(NotionBase):

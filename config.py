@@ -89,7 +89,7 @@ class Config:
     def create_schema(self):
         # Detailed descriptions for better control
         description_section = """Divide content into meaningful sections. Provide detailed section summaries following these rules:
-        1. Each section should have 2-3 detailed bullet points
+        1. Each section should have 2-4 detailed bullet points
         2. Each bullet point should be 20-30 words long
         3. Focus on specific details and examples
         4. Avoid generic statements
@@ -106,7 +106,6 @@ class Config:
         1. Are 20-30 words each
         2. Include specific examples or data
         3. Focus on distinct aspects"""
-
 
         # Schema for sections with length controls
         section_schema = {
@@ -129,8 +128,8 @@ class Config:
                                 "maxLength": 100  # Enforce maximum length for clarity
                             },
                             "description": description_bullet,
-                            "minItems": 2,
-                            "maxItems": 3
+                            "minItems": 1,
+                            "maxItems": 4
                         }
                     },
                     "required": ["title", "summary"]
@@ -197,7 +196,7 @@ class Config:
             }]
 
         # Create function schemas with updated properties
-        section_properties = {**section_schema, **keyword_schema}
+        section_properties = {**section_schema}
         json_function_section = create_function(section_properties, ["sections"])
 
         final_properties = {**full_summary_schema, **one_sentence_summary_schema, **keyword_schema}
