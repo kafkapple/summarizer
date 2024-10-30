@@ -6,6 +6,9 @@ from typing import List, Dict, Optional
 import time
 import random   
 
+def sanitize_select_option(option):
+    # 쉼표를 제거하거나 다른 문자로 대체
+    return option.replace(',', ' ')
 class NotionBase:
     def __init__(self, config, verbose=False, quiet=False):
         self.config = config
@@ -20,14 +23,18 @@ class NotionBase:
 
     def save_to_notion(self, data, properties, children=None):
         try:
-            self.client.pages.create(
-                parent={"database_id": self.database_id},
-                properties=properties,
-                children=children or []
-            )
-            print(f"Summary for '{data['title']}' has been saved to Notion.\n")
+            if children:
+                # 페이지를 생성하고 페이지 ID를 저장
+                response = self.client.pages.create(
+                    parent={"database_id": self.database_id},
+                    properties=properties,
+                    children=children  # children을 배열로 전달
+                )
+                page_id = response.get('id', '')
+                print(f"Summary for '{data['title']}' has been saved to Notion with page ID: {page_id}.\n")
         except Exception as e:
             print(f"Error saving to Notion: {e}")
+
     # organize_summary 메소드 수정
     def create_text_block(self, content: str, block_type: str = "paragraph", keywords: List[str] = None) -> Dict:
         """키워드 강조가 포함된 텍스트 블록을 생성합니다."""
@@ -60,11 +67,15 @@ class NotionBase:
         }
 
     def organize_summary(self, data, heading='Section summary', contents='summary'):
-        children = [
-            {"object": "block", "type": "table_of_contents", "table_of_contents": {}},
-        ]
+        chapter_blocks = []  # 챕터별 블록을 저장할 리스트
+        current_chapter_blocks = []  # 현재 챕터의 블록을 저장할 리스트
+
+        children = []  # children 리스트 초기화
         
         try:
+            # table_of_contents 블록을 children 리스트에 추가
+            children.append({"object": "block", "type": "table_of_contents", "table_of_contents": {}})
+            
             if 'thumbnail' in data:
                 children.append({
                     "object": "block",
@@ -77,8 +88,8 @@ class NotionBase:
 
             summary = data.get('summary', {})
             keywords = []
-            if self.config.INCLUDE_KEYWORDS and self.config.HIGHLIGHT_KEYWORDS:
-                keywords = summary.get('keywords', [])  # keywords_original 사용
+            if self.config.INCLUDE_KEYWORDS:
+                keywords = summary.get('keywords', [])
 
             if isinstance(summary, dict):
                 chapters = summary.get('chapters', []) if self.config.ENABLE_CHAPTERS else []
@@ -86,7 +97,6 @@ class NotionBase:
                 if 'sections' in summary:
                     children.append(self.create_text_block("Detailed Section Summaries", "heading_1"))
                     
-                    # 챕터 정보가 있는 경우
                     if chapters:
                         current_chapter_idx = 0
                         current_chapter = chapters[current_chapter_idx]
@@ -102,12 +112,37 @@ class NotionBase:
                             # 현재 섹션이 새로운 챕터의 시작이면 챕터 제목 추가
                             if current_chapter_idx < len(chapters) and \
                                i == current_chapter['section_indices']['start']:
-                                children.append(self.create_text_block(
+                                if current_chapter_blocks:
+                                    chapter_blocks.append(current_chapter_blocks)
+                                    current_chapter_blocks = []
+                                current_chapter_blocks.append(self.create_text_block(
                                     f"{current_chapter_idx + 1}. {current_chapter['chapter_title']}",
                                     "heading_1"
                                 ))
                             
                             # 섹션 추가
+                            if isinstance(segment, dict):
+                                # 섹션 제목
+                                current_chapter_blocks.append(self.create_text_block(
+                                    f'{i+1}. {segment.get("title", "")}',
+                                    "heading_2",
+                                    keywords if keywords else None
+                                ))
+                                
+                                # 섹션 내용
+                                summary_content = segment.get('summary', [])
+                                if isinstance(summary_content, list):
+                                    for item in summary_content:
+                                        current_chapter_blocks.append(self.create_bulleted_list_item(
+                                            item,
+                                            keywords if keywords else None
+                                        ))
+                                
+                                current_chapter_blocks.append(self.create_text_block(""))  # 빈 줄
+
+                    else:
+                        # 챕터가 없는 경우 섹션을 직접 children에 추가
+                        for i, segment in enumerate(summary['sections']):
                             if isinstance(segment, dict):
                                 # 섹션 제목
                                 children.append(self.create_text_block(
@@ -126,39 +161,23 @@ class NotionBase:
                                         ))
                                 
                                 children.append(self.create_text_block(""))  # 빈 줄
-                    else:
-                        # 챕터가 없는 경우의 처리
-                        for i, segment in enumerate(summary['sections']):
-                            if isinstance(segment, dict):
-                                children.append(self.create_text_block(
-                                    f'{i+1}. {segment.get("title", "")}',
-                                    "heading_2",
-                                    keywords if keywords else None
-                                ))
-                                
-                                summary_content = segment.get('summary', [])
-                                if isinstance(summary_content, list):
-                                    for item in summary_content:
-                                        children.append(self.create_bulleted_list_item(
-                                            item,
-                                            keywords if keywords else None
-                                        ))
-                                
-                                children.append(self.create_text_block(""))  # 빈 줄
 
         except Exception as e:
             print(f'Error organizing summary: {e}')
         
-        return children
+        return chapter_blocks if chapters else children
 
     def common_properties(self, data):
         playlist = data.get('playlist', '')
         print(playlist)
+        keywords = data.get('keywords', [])
+        sanitized_keywords = [ sanitize_select_option(keyword) for keyword in keywords]
+        
         properties = {
-            "Title": {"title": [{"text": {"content": data.get('title', '')}}]},
-            "URL": {"url": data.get('url', '')},
-            "GPT Model": {"select": {"name": data.get('model', '')}},
-            "Keywords": {"multi_select": [{"name": keyword} for keyword in data.get('keywords', [])]},
+            "Title": {"title": [{"text": {"content": data.get('title', 'Unknwon')}}]},
+            "URL": {"url": data.get('url', 'Unknown')},
+            "GPT Model": {"select": {"name": self.config.GPT_MODEL}},
+            "Keywords": {"multi_select": [{"name": keyword} for keyword in sanitized_keywords ]},
            # "Channel": {"rich_text": [{"text": {"content": data.get('channel', '')}}]},
         }
         # Channel, Like Count, Comment Count, One Sentence Summary 
@@ -188,12 +207,27 @@ class NotionBase:
         if not text or not keywords:
             return [{"type": "text", "text": {"content": text or ""}}]
 
+        # 키워드 전처리
+        processed_keywords = []
+        for keyword in keywords:
+            if isinstance(keyword, dict):
+                # 딕셔너리인 경우 'term' 키의 값을 사용
+                term = keyword.get('term', '')
+                if term:
+                    processed_keywords.append(term)
+            elif isinstance(keyword, str):
+                # 문자열인 경우 그대로 사용
+                processed_keywords.append(keyword)
+
+        if not processed_keywords:
+            return [{"type": "text", "text": {"content": text}}]
+
         result = []
         current_pos = 0
         text_lower = text.lower()
         
         # 키워드를 길이 순으로 정렬 (긴 키워드부터 처리)
-        sorted_keywords = sorted(keywords, key=len, reverse=True)
+        sorted_keywords = sorted(processed_keywords, key=len, reverse=True)
         
         while current_pos < len(text):
             found_keyword = False
@@ -230,7 +264,7 @@ class NotionBase:
                 # 키워드를 찾지 못한 경우, 다음 문자를 일반 텍스트로 추가
                 next_pos = len(text)
                 for keyword in sorted_keywords:
-                    keyword_pos = text_lower.find(keyword_lower, current_pos + 1)
+                    keyword_pos = text_lower.find(keyword.lower(), current_pos + 1)
                     if keyword_pos != -1 and keyword_pos < next_pos:
                         next_pos = keyword_pos
                 
@@ -244,28 +278,17 @@ class NotionBase:
 
     
 class Pocket2Notion(NotionBase):
-    def __init__(self, config, verbose=False, quiet=False):
+    def __init__(self, config, pocket_client, verbose=False):
         """
         Pocket2Notion 초기화
         Args:
             config: 설정 객체 (NOTION_TOKEN, NOTION_DATABASE_ID 등 포함)
             verbose: 상세 로깅 여부
-            quiet: 로깅 최소화 여부
         """
-        super().__init__(config, verbose, quiet)
-        self.pocket_client = None
-    
-        
-    def initialize(self, pocket_client):
-        """
-        Pocket 클라이언트와 Summarizer 설정
-        Args:
-            pocket_client: PocketClient 인스턴스
-            summarizer: Summarizer 인스턴스
-        """
+        super().__init__(config, verbose)
         self.pocket_client = pocket_client
         
-    def save_to_notion_pocket(self, data):
+    def save_to_notion_text(self, data):
         """
         Pocket 아이템을 Notion에 저장
         Args:
@@ -283,28 +306,68 @@ class Pocket2Notion(NotionBase):
                 "Language": {"select": {"name": data.get('lang', 'unknown')}},
                 "Favorite": {"select": {"name": str(data.get('favorite', False))}},
                 "Status": {"select": {"name": data.get('status', 'unread')}},
-                "Video": {"select": {"name": str(data.get('has_video', False))}}
+                #"Video": {"select": {"name": str(data.get('has_video', False))}},
+                "Method": {"select": {"name": data.get('method', 'unknown')}},
+                "Tags": {"multi_select": [{"name": topic} for topic in data.get('tags', [])]},
+                "Source": {"select": {"name": data.get('source_info', 'unknown')}},
+
             })
             
-            if not self.quiet:
+            if self.verbose:
                 print(f"Saving to Notion: {data.get('title', 'Untitled')}")
-                
             self.save_to_notion(data, properties, children)
             
         except Exception as e:
-            if not self.quiet:
-                print(f"Error saving to Notion: {str(e)}")
+            import pickle
+            with open(f'{data.get("title", "Untitled")}.pkl', 'wb') as file:
+                pickle.dump(data, file)
+            if self.verbose:
+                print(f"Error saving to Notion: {str(e)}\nSave {data.get('title', 'Untitled')}.pkl")
             raise
             
-
 class Raindrop2Notion(NotionBase):
-    def save_to_notion_raindrop(self, data):
-        properties = self.common_properties(data)
-        properties.update({
-            "Collection": {"select": {"name": data['collection']}}
-        })
-        children = self.organize_summary(data)
-        self.save_to_notion(data, properties, children)
+    def __init__(self, config, raindrop_client, verbose=False):
+        
+        super().__init__(config, verbose)
+        self.raindrop_client = raindrop_client
+        
+    def save_to_notion_text(self, data):
+        """
+        Args:
+            data: 처리된 Pocket 아이템 데이터
+        """
+        try:
+            children = self.organize_summary(data)
+            properties = self.common_properties(data)
+            
+            # Pocket 특화 properties 추가
+            properties.update({
+                "Excerpt": {"rich_text": [{"text": {"content": data.get('excerpt', '')[:2000]}}]},
+                "Word count": {"number": int(data.get('word_count', 0))},
+                "Date": {"date": {"start": data.get('time_added', '')}},
+                "Language": {"select": {"name": data.get('lang', 'unknown')}},
+                "Favorite": {"select": {"name": str(data.get('favorite', False))}},
+                "Status": {"select": {"name": data.get('status', 'unread')}},
+                #"Video": {"select": {"name": str(data.get('has_video', False))}},
+                "Method": {"select": {"name": data.get('method', 'unknown')}},
+                "Tags": {"multi_select": [{"name": topic} for topic in data.get('tags', [])]},
+                "Source": {"select": {"name": data.get('source_info', 'unknown')}},
+                "Collection": {"select": {"name": data['collection']}}
+
+            })
+            
+            if self.verbose:
+                print(f"Saving to Notion: {data.get('title', 'Untitled')}")
+            self.save_to_notion(data, properties, children)
+            
+        except Exception as e:
+            import pickle
+            with open(f'{data.get("title", "Untitled")}.pkl', 'wb') as file:
+                pickle.dump(data, file)
+            if self.verbose:
+                print(f"Error saving to Notion: {str(e)}\nSave {data.get('title', 'Untitled')}.pkl")
+            raise
+
 
 class YouTube2Notion(NotionBase):
     def __init__(self, config, verbose=False, quiet=False):
@@ -331,7 +394,7 @@ class YouTube2Notion(NotionBase):
         properties = self.common_properties(data)
         summary = data.get('summary', {})
         try:
-            keywords = [topic for topic in summary.get('keywords_original', '')]
+            keywords = [topic for topic in summary.get('keywords', '')]
         except:
             keywords = []
         properties.update({
