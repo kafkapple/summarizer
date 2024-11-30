@@ -3,11 +3,96 @@ import os
 import re
 from datetime import datetime
 import pandas as pd
-
+import tiktoken
 from typing import List, Union, Dict
 class Utils:
     def __init__(self):
         self.script_dir = self.get_script_directory()
+    @staticmethod
+    def num_tokens_from_string(string: str, gpt_model: str) -> int: #encoding_name: str = "cl100k_base"
+        """Returns the number of tokens in a text string."""
+        #encoding = openai.Encoding.get_encoding(self.gpt_model)
+        #encoding = tiktoken.get_encoding(encoding_name)
+        if not isinstance(string, str):
+            print(f"Warning: Expected string, got {type(string)}. Converting to string.")
+            string = str(string)
+        encoding = tiktoken.encoding_for_model(gpt_model)
+        return len(encoding.encode(string))
+    @staticmethod
+    def split_text_into_chunks(text: str, max_length: int = 2000, by_token: bool = False, gpt_model: str = None) -> List[str]:
+        """
+        텍스트를 청크로 분할하는 공통 함수
+        
+        Args:
+            text (str): 분할할 텍스트
+            max_length (int): 청크당 최대 길이 (토큰 또는 문자)
+            by_token (bool): 토큰 기준 분할 여부
+        
+        Returns:
+            List[str]: 분할된 청크 리스트
+        """
+        if not text:
+            return []
+        
+        # 먼저 기본적인 문장 종결 부호로 시도
+        sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
+        
+        # 문장 종결 부호로 분리가 안 된 경우에만 다른 패턴 시도
+        if len(sentences) <= 1:
+            sentence_patterns = [
+                r'[\n]{2,}',             # 빈 줄
+                r'(?<=[;:])[\s\n]+',     # 세미콜론/콜론 뒤의 공백이나 줄바꿈
+                r'[\s]{2,}',             # 연속된 공백
+                r'(?<=[\,])[\s]+'        # 쉼표 뒤의 공백
+            ]
+            
+            current_text = text.strip()
+            for pattern in sentence_patterns:
+                sentences = [s.strip() for s in re.split(pattern, current_text) if s.strip()]
+                if len(sentences) > 1:
+                    break
+        
+        # 여전히 분리가 안 된 경우 단순 길이 기준 분할
+        if len(sentences) <= 1:
+            sentences = [text[i:i+max_length] for i in range(0, len(text), max_length)]
+        
+        # 청크 생성
+        chunks = []
+        current_chunk = ""
+        
+        for i in range(len(sentences)):
+            sentence = sentences[i].strip()
+            if not sentence:
+                continue
+                
+            potential_chunk = current_chunk + (" " if current_chunk else "") + sentence
+            
+            # 길이 체크 (토큰 또는 문자 기준)
+            if by_token:
+                current_length = Utils.num_tokens_from_string(potential_chunk, gpt_model)  # 토큰 계산 함수 필요
+                length_exceeded = current_length >= max_length
+            else:
+                length_exceeded = len(potential_chunk) >= max_length
+            
+            if length_exceeded and current_chunk:
+                chunks.append(current_chunk.strip())
+                current_chunk = sentence
+            else:
+                current_chunk = potential_chunk
+        
+        if current_chunk:
+            chunks.append(current_chunk.strip())
+        
+        return chunks
+    
+    # @staticmethod
+    # def prep_text():
+    #     #Remove special characters (optional, uncomment if needed)
+    #     text = re.sub(r'[^\w\s]', '', text)
+    #     #Convert to lowercase (optional, uncomment if needed)
+    #     text = text.lower()
+    #     #Remove numbers (optional, uncomment if needed)
+    #     text = re.sub(r'\d+', '', text)
     
     def get_latest_file_with_string(directory, search_string):
         """특정 문자열을 포함하는 파일 중 가장 최신 파일의 경로를 반환합니다."""
@@ -153,4 +238,62 @@ class Utils:
         for i in range(0, len(lst), n):
             yield lst[i:i + n]
 
-    
+    @staticmethod
+    def preprocess_text(text: Union[str, List[Dict[str, str]], List[str]], 
+                       remove_special_chars: bool = False, 
+                       to_lowercase: bool = False, 
+                       remove_numbers: bool = False,
+                       clean_tags: bool = True) -> str:
+        """
+        통합된 텍스트 전처리 함수
+        
+        Args:
+            text: 처리할 텍스트
+            remove_special_chars: 특수문자 제거 여부
+            to_lowercase: 소문자 변환 여부
+            remove_numbers: 숫자 제거 여부
+            clean_tags: [음악], (박수) 등의 태그 제거 여부
+        """
+        try:
+            if not text:
+                return ''
+                
+            # 리스트 처리
+            if isinstance(text, list):
+                if all(isinstance(item, dict) and 'text' in item for item in text):
+                    # 자막 딕셔너리 리스트 처리
+                    text_parts = []
+                    for entry in text:
+                        cleaned_text = entry['text'].strip()
+                        if clean_tags:
+                            cleaned_text = re.sub(r'\[.*?\]', '', cleaned_text)
+                            cleaned_text = re.sub(r'\(.*?\)', '', cleaned_text)
+                        
+                        if cleaned_text:
+                            if not cleaned_text[-1] in '.!?':
+                                cleaned_text += '.'
+                            text_parts.append(cleaned_text)
+                    text = ' '.join(text_parts)
+                else:
+                    text = ' '.join(str(item).strip() for item in text if str(item).strip())
+            
+            elif not isinstance(text, str):
+                raise ValueError("입력은 문자열 또는 리스트 형식이어야 합니다")
+
+            # 기본 전처리
+            text = text.strip()
+            text = ' '.join(text.split())
+            
+            # 선택적 전처리
+            if remove_special_chars:
+                text = re.sub(r'[^\w\s]', '', text)
+            if to_lowercase:
+                text = text.lower()
+            if remove_numbers:
+                text = re.sub(r'\d+', '', text)
+                
+            return text
+            
+        except Exception as e:
+            print(f"텍스트 전처리 중 오류 발생: {e}")
+            return ''

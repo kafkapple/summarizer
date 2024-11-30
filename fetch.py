@@ -19,211 +19,17 @@ from abc import ABC, abstractmethod
 import cloudscraper
 import re
 import requests
-from newspaper import Article, Config
-from readability import Document
-import tiktoken
-from typing import List, Union, Dict
 
-# import nltk
-# nltk.download('punkt_tab')
+
 # Example usage:
-# class MediaSource(ABC):
-#     @abstractmethod
-#     def fetch_content(self, identifier):
-#         pass
-#     # @abstractmethod
-#     # def get_transcript(self, identifier):
-#     #     pass
-
-from abc import ABC, abstractmethod
-
-class ContentFetcher(ABC):
+class MediaSource(ABC):
     @abstractmethod
-    def fetch_items(self, **kwargs):
+    def fetch_content(self, identifier):
         pass
-    
-    @abstractmethod
-    def get_content(self, item):
-        pass
+    # @abstractmethod
+    # def get_transcript(self, identifier):
+    #     pass
 
-class ContentProcessor(ABC):
-    @abstractmethod
-    def process_content(self, content: str) -> Dict:
-        pass
-
-class MockContentFetcher(ContentFetcher):
-    def __init__(self, mock_data: Dict):
-        self.mock_data = mock_data
-    
-    def fetch_items(self, **kwargs):
-        return self.mock_data.get('items', [])
-    
-    def get_content(self, item):
-        return self.mock_data.get('content', {})
-    
-class TextProcessor:
-    @staticmethod
-    def clean_text(raw_text):
-        """
-        Clean the extracted text by removing HTML tags and unnecessary whitespace.
-        
-        :param raw_text: str - Raw text containing HTML tags and unwanted characters.
-        :return: str - Cleaned text with only the main content.
-        """
-        # 1. Remove HTML tags using BeautifulSoup
-        soup = BeautifulSoup(raw_text, "html.parser")
-        text = soup.get_text(separator=" ")
-
-        # 2. Remove unwanted characters or patterns (e.g., extra spaces, newlines)
-        # Remove multiple spaces and newlines
-        text = re.sub(r'\s+', ' ', text).strip()
-        
-        return text
-    @staticmethod
-    def preprocess_text(text: Union[str, List[Dict[str, str]], List[str]], 
-                       remove_special_chars: bool = False, 
-                       to_lowercase: bool = False, 
-                       remove_numbers: bool = False,
-                       clean_tags: bool = True) -> str:
-        """
-        통합된 텍스트 전처리 함수
-        
-        Args:
-            text: 처리할 텍스트
-            remove_special_chars: 특수문자 제거 여부
-            to_lowercase: 소문자 변환 여부
-            remove_numbers: 숫자 제거 여부
-            clean_tags: [음악], (박수) 등의 태그 제거 여부
-        """
-        try:
-            if not text:
-                return ''
-                
-            # 리스트 처리
-            if isinstance(text, list):
-                if all(isinstance(item, dict) and 'text' in item for item in text):
-                    # 자막 딕셔너리 리스트 처리
-                    text_parts = []
-                    for entry in text:
-                        cleaned_text = entry['text'].strip()
-                        if clean_tags:
-                            cleaned_text = re.sub(r'\[.*?\]', '', cleaned_text)
-                            cleaned_text = re.sub(r'\(.*?\)', '', cleaned_text)
-                        
-                        if cleaned_text:
-                            if not cleaned_text[-1] in '.!?':
-                                cleaned_text += '.'
-                            text_parts.append(cleaned_text)
-                    text = ' '.join(text_parts)
-                else:
-                    text = ' '.join(str(item).strip() for item in text if str(item).strip())
-            
-            elif not isinstance(text, str):
-                raise ValueError("입력은 문자열 또는 리스트 형식이어야 합니다")
-
-            # 기본 전처리
-            text = text.strip()
-            text = ' '.join(text.split())
-            
-            # 선택적 전처리
-            if remove_special_chars:
-                text = re.sub(r'[^\w\s]', '', text)
-            if to_lowercase:
-                text = text.lower()
-            if remove_numbers:
-                text = re.sub(r'\d+', '', text)
-                
-            return text
-            
-        except Exception as e:
-            print(f"텍스트 전처리 중 오류 발생: {e}")
-            return ''
-    @staticmethod
-    def num_tokens_from_string(string: str, gpt_model: str) -> int: #encoding_name: str = "cl100k_base"
-        """Returns the number of tokens in a text string."""
-        #encoding = openai.Encoding.get_encoding(self.gpt_model)
-        #encoding = tiktoken.get_encoding(encoding_name)
-        if not isinstance(string, str):
-            print(f"Warning: Expected string, got {type(string)}. Converting to string.")
-            string = str(string)
-        encoding = tiktoken.encoding_for_model(gpt_model)
-        return len(encoding.encode(string))
-    @staticmethod
-    def split_text_into_chunks(text: str, max_length: int = 2000, by_token: bool = False, gpt_model: str = None) -> List[str]:
-        """
-        텍스트를 청크로 분할하는 공통 함수
-        
-        Args:
-            text (str): 분할할 텍스트
-            max_length (int): 청크당 최대 길이 (토큰 또는 문자)
-            by_token (bool): 토큰 기준 분할 여부
-        
-        Returns:
-            List[str]: 분할된 청크 리스트
-        """
-        if not text:
-            return []
-        
-        # 먼저 기본적인 문장 종결 부호로 시도
-        sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
-        
-        # 문장 종결 부호로 분리가 안 된 경우에만 다른 패턴 시도
-        if len(sentences) <= 1:
-            sentence_patterns = [
-                r'[\n]{2,}',             # 빈 줄
-                r'(?<=[;:])[\s\n]+',     # 세미콜론/콜론 뒤의 공백이나 줄바꿈
-                r'[\s]{2,}',             # 연속된 공백
-                r'(?<=[\,])[\s]+'        # 쉼표 뒤의 공백
-            ]
-            
-            current_text = text.strip()
-            for pattern in sentence_patterns:
-                sentences = [s.strip() for s in re.split(pattern, current_text) if s.strip()]
-                if len(sentences) > 1:
-                    break
-        
-        # 여전히 분리가 안 된 경우 단순 길이 기준 분할
-        if len(sentences) <= 1:
-            sentences = [text[i:i+max_length] for i in range(0, len(text), max_length)]
-        
-        # 청크 생성
-        chunks = []
-        current_chunk = ""
-        
-        for i in range(len(sentences)):
-            sentence = sentences[i].strip()
-            if not sentence:
-                continue
-                
-            potential_chunk = current_chunk + (" " if current_chunk else "") + sentence
-            
-            # 길이 체크 (토큰 또는 문자 기준)
-            if by_token:
-                current_length = TextProcessor.num_tokens_from_string(potential_chunk, gpt_model)  # 토큰 계산 함수 필요
-                length_exceeded = current_length >= max_length
-            else:
-                length_exceeded = len(potential_chunk) >= max_length
-            
-            if length_exceeded and current_chunk:
-                chunks.append(current_chunk.strip())
-                current_chunk = sentence
-            else:
-                current_chunk = potential_chunk
-        
-        if current_chunk:
-            chunks.append(current_chunk.strip())
-        
-        return chunks
-    
-    # @staticmethod
-    # def prep_text():
-    #     #Remove special characters (optional, uncomment if needed)
-    #     text = re.sub(r'[^\w\s]', '', text)
-    #     #Convert to lowercase (optional, uncomment if needed)
-    #     text = text.lower()
-    #     #Remove numbers (optional, uncomment if needed)
-    #     text = re.sub(r'\d+', '', text)
-    
 class WebContent():
     def __init__(self, config):
         self.config = config
@@ -235,191 +41,10 @@ class WebContent():
         )
         self.api_token = config.DIFFBOT_API_TOKEN
         self.base_url = "https://api.diffbot.com/v3/article"
-        print('#'*7+' WebContent init '+ '#'*7)
-    
-    @staticmethod
-    def is_meaningful_content(text):
-        # 1. 특정 키워드가 과도하게 반복될 경우 무의미한 텍스트로 간주합니다.
-        exclusion_keywords = ["공지", "회원가입", "게시판", "공지사항", "로그인", "홈", "이용약관", "개인정보"]
-        keyword_threshold = 5  # 각 키워드가 5번 이상 반복되면 무의미한 텍스트로 간주
-        for keyword in exclusion_keywords:
-            if text.count(keyword) >= keyword_threshold:
-                print(f'Exclusion keyword found: {keyword}')
-                return False
+        print('#'*7+'WebContent init'+'#'*7)
 
-        # 2. 특수 기호가 연속적으로 등장하는 경우 무의미한 텍스트로 간주합니다.
-        special_pattern = re.compile(r"[\[\]>|]{2,}")
-        if len(special_pattern.findall(text)) >= 10:
-            print('Special pattern found.')
-            return False
-
-        # 3. 정보 밀도를 판단하여 대부분이 고유명사나 제목일 경우 무의미한 텍스트로 간주합니다.
-        # 여기서는 ">"와 "|" 기호를 기준으로 제목/링크가 과도한 경우를 필터링
-        title_like_patterns = re.findall(r"\b(?:\S+>|\|\S+)\b", text)
-        if len(title_like_patterns) > 15:  # 제목 패턴이 15개 이상이면 무의미한 텍스트로 간주
-            
-            return False
-
-        # # 4. 정보 밀도가 낮은 경우 필터링합니다.
-        # word_count = len(re.findall(r"\b\w+\b", text))
-        # meaningful_words = len(re.findall(r"\b(뉴스|영상|분석|토론|기술|개발|경제|정책|사회)\b", text))
-        # if word_count > 200 and meaningful_words < 10:
-        #     print('Low information density.')
-        #     return False
-
-        return True
-
-    def extract_text_readability(self, url):
-        try:
-            headers = {'User-Agent': self.headers['User-Agent']}
-            response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status()
-            
-            if response.encoding == 'ISO-8859-1':
-                response.encoding = response.apparent_encoding
-                
-            # 원본 HTML 파싱
-            original_soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # 1. Readability 시도
-            doc = Document(response.text)
-            content = doc.summary()
-            
-            # 2. Readability 실패시 대체 방법
-            if "ruthless removal did not work" in content or len(content) < 100:
-                print("Readability fallback: using alternative extraction method")
-                
-                # 불필요한 태그 제거
-                for tag in original_soup.find_all(['script', 'style', 'nav', 'footer', 'iframe', 'header', 'aside']):
-                    tag.decompose()
-                
-                # 주요 콘텐츠 영역 찾기
-                content_candidates = [
-                    original_soup.find('article'),
-                    original_soup.find('main'),
-                    original_soup.find(class_='content'),
-                    original_soup.find(class_='post-content'),
-                    original_soup.find(class_='entry-content'),
-                    original_soup.find(id='content'),
-                    original_soup.find(class_='article-content'),
-                    original_soup.find(role='main')
-                ]
-                
-                content = None
-                for candidate in content_candidates:
-                    if candidate:
-                        content = candidate
-                        break
-                
-                if not content:
-                    # 가장 많은 <p> 태그를 포함한 div 찾기
-                    max_p_count = 0
-                    max_div = None
-                    for div in original_soup.find_all('div'):
-                        p_count = len(div.find_all('p'))
-                        if p_count > max_p_count:
-                            max_p_count = p_count
-                            max_div = div
-                    
-                    if max_div:
-                        content = max_div
-                    else:
-                        content = original_soup
-            
-            # 최종 텍스트 추출
-            if isinstance(content, str):
-                soup = BeautifulSoup(content, 'html.parser')
-            else:
-                soup = content
-                
-            # 남은 불필요 요소 제거
-            for tag in soup.find_all(['script', 'style', 'nav', 'footer', 'iframe']):
-                tag.decompose()
-                
-            # 텍스트 추출 및 정제
-            paragraphs = []
-            for p in soup.find_all(['p', 'article', 'section']):
-                text = p.get_text().strip()
-                if len(text) > 20:  # 짧은 텍스트 필터링
-                    paragraphs.append(text)
-            
-            text = '\n\n'.join(paragraphs)
-            text = re.sub(r'\s+', ' ', text).strip()
-            
-            # 사이트 정보 추출
-            site_info = self._extract_site_info(url, soup=original_soup)
-            
-            article_data = {
-                'title': doc.title() or '',
-                'text': text,
-                'source': {
-                    'method': 'readability',
-                    **site_info
-                }
-            }
-            
-            if len(text) < 100:
-                print("Warning: Extracted text is too short")
-                return None
-                
-            return article_data
-            
-        except Exception as e:
-            print(f"Readability 추출 오류: {str(e)}")
-            return None
-    def extract_text_soup(self, url):
-        try:
-            header = {'User-Agent': self.headers['User-Agent']}
-            response = requests.get(url, header)
-            soup = BeautifulSoup(response.content, 'html.parser')
-            # Remove script and style elements
-            for script_or_style in soup(['script', 'style']):
-                script_or_style.decompose()
-
-            # Get text
-            text = ' '.join(soup.stripped_strings)
-            text = {'text': text}
-            return text
-        except Exception as e:
-            print(f'Error parsing article at {url}: {e}')
-    def extract_text_newspaper(self, url):
-        try:
-            config = Config()
-            config.browser_user_agent = self.headers['User-Agent']
-            config.request_timeout = 10
-            
-            article = Article(url, config=config)
-            article.download()
-            article.parse()
-            
-            try:
-                article.nlp()
-            except:
-                print("NLP 처리 실패")
-            
-            # 사이트 정보 추출
-            site_info = self._extract_site_info(
-                url, 
-                response_text=article.html
-            )
-            
-            article_data = {
-                'title': article.title,
-                'text': article.text,
-                'source': {
-                    'method': 'newspaper',
-                    **site_info,
-                    'canonical_link': article.canonical_link
-                }
-            }
-            
-            return article_data
-            
-        except Exception as e:
-            print(f"Newspaper 추출 오류: {str(e)}")
-            return None
-
-    def extract_text_diffbot(self, url):
+        
+    def extract_text(self, url):
         """
         Extracts the main text and essential information from a given URL.
         
@@ -444,15 +69,7 @@ class WebContent():
                     'title': article_data.get('title', ''),
                     'author': article_data.get('author', ''),
                     'date': article_data.get('date', ''),
-                    'text': article_data.get('text', ''),
-                    'source': {
-                        'method': 'diffbot',
-                        'site_name': article_data.get('siteName', ''),
-                        'domain': article_data.get('resolvedDomain', ''),
-                        'url': url,
-                        'publisher_region': article_data.get('publisherRegion', ''),
-                        'publisher_country': article_data.get('publisherCountry', '')
-                    }
+                    'text': article_data.get('text', '')
                 }
                 return extracted_content
             else:
@@ -464,7 +81,22 @@ class WebContent():
             return {}
     
 
-    
+    def clean_text(self, raw_text):
+        """
+        Clean the extracted text by removing HTML tags and unnecessary whitespace.
+        
+        :param raw_text: str - Raw text containing HTML tags and unwanted characters.
+        :return: str - Cleaned text with only the main content.
+        """
+        # 1. Remove HTML tags using BeautifulSoup
+        soup = BeautifulSoup(raw_text, "html.parser")
+        text = soup.get_text(separator=" ")
+
+        # 2. Remove unwanted characters or patterns (e.g., extra spaces, newlines)
+        # Remove multiple spaces and newlines
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        return text
 
     def _get_random_headers(self):
         """랜덤 User-Agent와 함께 요청 헤더 생성"""
@@ -511,150 +143,8 @@ class WebContent():
         content_lower = content.lower()
         return not any(keyword in content_lower for keyword in security_keywords)
 
-    def _extract_site_info(self, url, soup=None, response_text=None):
-        """공통 사이트 정보 추출 메서드"""
-        try:
-            from urllib.parse import urlparse
-            domain = urlparse(url).netloc
-            
-            if soup is None and response_text:
-                soup = BeautifulSoup(response_text, 'html.parser')
-            
-            site_name = None
-            if soup:
-                # 다양한 메타 태그에서 사이트 이름 찾기
-                meta_tags = [
-                    ('property', 'og:site_name'),
-                    ('name', 'application-name'),
-                    ('name', 'publisher'),
-                    ('name', 'author'),
-                    ('property', 'twitter:site')
-                ]
-                
-                for attr, value in meta_tags:
-                    meta = soup.find('meta', {attr: value})
-                    if meta and meta.get('content'):
-                        site_name = meta.get('content')
-                        break
-                
-                # 대체 방법: title 태그에서 추출
-                if not site_name and soup.title:
-                    site_parts = soup.title.string.split('|')
-                    if len(site_parts) > 1:
-                        site_name = site_parts[-1].strip()
-            
-                # 도메인에서 사이트 이름 추출 (다른 방법 실패 시)
-                if not site_name:
-                    site_name = domain.split('.')[0].capitalize()
-                
-                return {
-                    'site_name': site_name,
-                    'domain': domain,
-                    'url': url
-                }
-                
-        except Exception as e:
-            print(f"사이트 정보 추출 오류: {e}")
-            return {
-                'site_name': '',
-                'domain': urlparse(url).netloc,
-                'url': url
-            }
 
-    def save_extracted_text(self, article_data: dict, save_path: str = None) -> str:
-        """
-        추출된 텍스트를 파일로 저장
-        
-        Args:
-            article_data: 추출된 기사 데이터
-            save_path: 저장할 경로 (기본값: None, 이 경우 기본 경로 사용)
-        
-        Returns:
-            str: 저장된 파일의 경로
-        """
-        try:
-            if not article_data or 'text' not in article_data:
-                print("저장할 텍스트가 없습니다.")
-                return None
-                
-            # 기본 저장 경로 설정
-            if not save_path:
-                save_path = os.path.join(self.config.save_path, 'extracted_texts')
-            os.makedirs(save_path, exist_ok=True)
-            
-            # 파일명 구성 요소 준비
-            source_info = article_data.get('source', {})
-            domain = source_info.get('domain', '').replace('.', '_')
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            extractor = source_info.get('method', 'unknown')  # 추출 방법
-            
-            # 제목 정제
-            title = article_data.get('title', '').strip()
-            title = re.sub(r'[\\/*?:"<>|]', '', title)
-            title = title[:50] if title else 'untitled'  # 제목 길이 제한
-            
-            # 파일명 형식: domain_title_extractor_timestamp.txt
-            filename = f"{domain}_{title}_{extractor}_{timestamp}.txt"
-            filepath = os.path.join(save_path, filename)
-            
-            info ={'source_info': source_info, 'extractor': extractor, 'title': title, 'timestamp': timestamp, 'filepath': filepath}
-            # 텍스트 파일 작성
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(f"Title: {article_data.get('title', '')}\n")
-                f.write(f"Source: {source_info.get('site_name', '')}\n")
-                f.write(f"URL: {source_info.get('url', '')}\n")
-                f.write(f"Extracted Date: {timestamp}\n")
-                f.write(f"Method: {extractor}\n")
-                f.write("\n" + "="*50 + "\n\n")
-                f.write(article_data['text'])
-            
-            print(f"\n텍스트 파일이 저장되었습니다: {filepath}\n")
-            return info
-            
-        except Exception as e:
-            print(f"텍스트 저장 중 오류 발생: {e}")
-            return None
-
-    def fetch_web_content(self, url: str) -> Optional[Dict]:
-        """
-        웹 컨텐츠 추출 및 저장
-        """
-        try:
-            # 기존 추출 로직
-            for extractor in [
-                self.extract_text_diffbot,
-                self.extract_text_readability,
-                self.extract_text_newspaper,
-                self.extract_text_soup
-            ]:
-                try:
-                    content = extractor(url)
-                    text = content.get('text' , '')
-                    text = TextProcessor.clean_text(text)
-                    meaningful = self.is_meaningful_content(text)
-                    char_count = len(text)
-                    if content and char_count > 500 and meaningful:
-                        # 텍스트 파일로 저장
-                        filepath = self.save_extracted_text(content)
-                        saved_path = filepath
-                        if saved_path:
-                            content['saved_file'] = saved_path
-                        content['char_count'] = char_count
-                     
-                        return content
-                    else:
-                        print(f'Not meaningful content.')
-                except Exception as e:
-                    print(f"{extractor.__name__} 실패: {e}")
-                    continue
-                    
-            return None
-            
-        except Exception as e:
-            print(f"컨텐츠 추출 실패: {e}")
-            return None
-
-class YouTube():#MediaSource):
+class YouTube(MediaSource):
     def __init__(self, config):
         self._init_youtube_client(config)
     
@@ -663,12 +153,11 @@ class YouTube():#MediaSource):
         self.api_key = config.YOUTUBE_API_KEY
         self.config = config
         SCOPES = ['https://www.googleapis.com/auth/youtube.force-ssl']
-        
         creds = self._get_or_refresh_credentials(SCOPES)
         self.youtube = build("youtube", "v3", credentials=creds)
 
     def _get_or_refresh_credentials(self, SCOPES):
-        """인증 보 가져오기 또는 갱신"""
+        """인증 정보 가져오기 또는 갱신"""
         token_file = os.path.join(self.config.src_path, 'token.json')
         client_secret_file = os.path.join(self.config.src_path, 'client_secret.json')
         
@@ -678,61 +167,22 @@ class YouTube():#MediaSource):
         
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
-                try:
-                    creds.refresh(Request())
-                except Exception as e:
-                    print(f"토큰 갱신 실패: {e}")
-                    creds = self._run_auth_flow(client_secret_file, SCOPES)
+                creds.refresh(Request())
             else:
-                creds = self._run_auth_flow(client_secret_file, SCOPES)
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    client_secret_file, 
+                    SCOPES,
+                    redirect_uri='http://localhost:8080'  # 리디렉션 URI 명시적 지정
+                )
+                creds = flow.run_local_server(
+                    port=8080,  # 포트 명시적 지정
+                    success_message='인증이 완료되었습니다. 브라우저를 닫아도 됩니다.'
+                )
             
             with open(token_file, 'w') as token:
                 token.write(creds.to_json())
         
         return creds
-
-    def _run_auth_flow(self, client_secret_file, SCOPES):
-        """인증 흐름 실행"""
-        flow = InstalledAppFlow.from_client_secrets_file(client_secret_file, SCOPES)
-        creds = flow.run_local_server(port=0)
-        return creds
-
-    def fetch_content(self, video_id):
-        try:
-            url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id={video_id}&key={self.api_key}"
-            response = requests.get(url)
-            response.raise_for_status()
-            data = response.json()
-            
-            if not data.get("items"):
-                return None
-                
-            item = data["items"][0]
-            snippet = item["snippet"]
-            content_details = item["contentDetails"]
-            stats = item["statistics"]
-            
-            return {
-                'title': snippet["title"],
-                'channel_title': snippet["channelTitle"],
-                'duration': str(isodate.parse_duration(content_details["duration"])),
-                'publish_date': snippet["publishedAt"],
-                'view_count': self._safe_get_count(stats, "viewCount"),
-                'like_count': self._safe_get_count(stats, "likeCount"),
-                'comment_count': self._safe_get_count(stats, "commentCount"),
-                'description': snippet['description'],
-                'thumbnail': self._get_best_thumbnail(snippet.get("thumbnails", {})),
-                'chapters': [],
-                'category': self.fetch_category_name(snippet.get("categoryId", "Unknown")),
-                'tags': snippet.get("tags", []),
-                'url': f"https://www.youtube.com/watch?v={video_id}",
-                'model': self.config.GPT_MODEL,
-                'output_language': self.config.OUTPUT_LANGUAGE,
-            }
-        except requests.exceptions.RequestException as e:
-            print(f"API 요청 실패: {e}")
-            return None
-
     @staticmethod
     def parse_youtube_url(url):
         if "&si=" in url:
@@ -774,6 +224,37 @@ class YouTube():#MediaSource):
             return playlist_name
         else:
             return ''
+
+    def fetch_content(self, video_id):
+        url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id={video_id}&key={self.api_key}"
+        response = requests.get(url)
+        data = response.json()
+        
+        if not data.get("items"):
+            return None
+            
+        item = data["items"][0]
+        snippet = item["snippet"]
+        content_details = item["contentDetails"]
+        stats = item["statistics"]
+        
+        return {
+            'title': snippet["title"],
+            'channel_title': snippet["channelTitle"],
+            'duration': str(isodate.parse_duration(content_details["duration"])),
+            'publish_date': snippet["publishedAt"],
+            'view_count': self._safe_get_count(stats, "viewCount"),
+            'like_count': self._safe_get_count(stats, "likeCount"),
+            'comment_count': self._safe_get_count(stats, "commentCount"),
+            'description': snippet['description'],
+            'thumbnail': self._get_best_thumbnail(snippet.get("thumbnails", {})),
+            'chapters': [],
+            'category': self.fetch_category_name(snippet.get("categoryId", "Unknown")),
+            'tags': snippet.get("tags", []),
+            'url': f"https://www.youtube.com/watch?v={video_id}",
+            'model': self.config.GPT_MODEL,
+            'output_language': self.config.OUTPUT_LANGUAGE,
+        }
 
     def get_subscribed_channels_save(self, export_result):
         export_result.change_id(self.config.NOTION_DB_YOUTUBE_CH_ID)
@@ -847,7 +328,7 @@ class YouTube():#MediaSource):
                         transcript = transcript_list.find_transcript([lang])
                         if transcript:
                             # Utils의 preprocess_text 사용
-                            return TextProcessor.preprocess_text(transcript.fetch(), clean_tags=True)
+                            return Utils.preprocess_text(transcript.fetch(), clean_tags=True)
                     except NoTranscriptFound:
                         continue
                 
@@ -855,14 +336,14 @@ class YouTube():#MediaSource):
                 try:
                     generated_transcripts = transcript_list.find_generated_transcript(['ko', 'en', 'ja', 'auto'])
                     if generated_transcripts:
-                        return TextProcessor.preprocess_text(generated_transcripts.fetch())
+                        return Utils.preprocess_text(generated_transcripts.fetch())
                 except NoTranscriptFound:
                     pass
                 
                 # 3. 사용 가능한 모든 자막 확인
                 for transcript in transcript_list:
                     try:
-                        return TextProcessor.preprocess_text(transcript.fetch())
+                        return Utils.preprocess_text(transcript.fetch())
                     except NoTranscriptFound:
                         continue
             
@@ -905,8 +386,7 @@ class YouTube():#MediaSource):
                 break
 
         return videos
-#pocket
-# fetch_content ->_get_items_with_params -> get_all_items -> get_items
+
 class PocketClient(WebContent):
     def __init__(self, config):
         super().__init__(config)
@@ -914,17 +394,17 @@ class PocketClient(WebContent):
         self.access_token = config.POCKET_ACCESS_TOKEN
         self.base_url = "https://getpocket.com/v3"
         self.all_items = []
-        print('#'*7+' PocketClient init '+ '#'*7)
+        print('#'*7+'PocketClient init'+'#'*7)
 
-    def fetch_items(self, batch_size=500, state='all', detail_type='complete', sort='newest', offset=0, tags=None):
+    def fetch_content(self, batch_size=500, state='all', detail_type='complete', sort='newest', offset=0, tags=None):
         """
-        1. 전체 아이템 목록 먼저 수
-        2. 각 아이템별로 순차적으로 콘텐츠 수집 및 요약
+        1. 전체 아이템 목록 먼저 수집
+        2. 각 아이템별 ���으로 콘텐츠 수집 및 요약
         """
         # sort: newest, oldest, title, site
         # 1. 전체 아이템 목록 수집
         items = self._get_items_with_params(batch_size, state, detail_type, sort, offset, tags)
-        processed_items = self._process_items(items)
+        processed_items = self.process_items(items)
         
         print(f"총 {len(processed_items)}개의 아이템을 처리합니다.")
         return processed_items
@@ -934,7 +414,7 @@ class PocketClient(WebContent):
         """단일 아이템의 웹 콘텐츠 수집"""
         for attempt in range(max_retries):
             try:
-                # 요청 간 딜레이
+                # 요청  딜
                 time.sleep(random.uniform(2, 6))
                 
                 content = self.fetch_web_content(item['url'])
@@ -991,10 +471,13 @@ class PocketClient(WebContent):
         return processed_items
 
     def get_items(self, params, max_retries: int = 3, retry_delay: int = 1) -> List[Dict]:
-        
+        headers = {
+            'Content-Type': 'application/json',
+            'X-Accept': 'application/json'
+        }
         for attempt in range(max_retries):
             try:
-                response = requests.post(f"{self.base_url}/get", json=params, headers=self.headers)
+                response = requests.post(f"{self.base_url}/get", json=params, headers=headers)
                 response.raise_for_status()
                 return response.json().get("list", {})
             except requests.exceptions.RequestException as e:
@@ -1019,7 +502,7 @@ class PocketClient(WebContent):
             self.all_items.extend(items_batch.values())
             total_items += len(items_batch)
             
-            print(f"\n- Retrieved {len(items_batch)} items. Total: {total_items}")
+            print(f"Retrieved {len(items_batch)} items. Total: {total_items}")
             
             if max_items and total_items >= max_items:
                 self.all_items = self.all_items[:max_items]
@@ -1032,7 +515,7 @@ class PocketClient(WebContent):
                 print(f'n: {len(self.all_items)}\n')
         return self.all_items
     
-    def _process_items(self, items):
+    def process_items(self, items):
         processed = []
         for item in items:
             processed_item = {
@@ -1046,7 +529,7 @@ class PocketClient(WebContent):
                 'status': 'archived' if item.get('status') == '1' else 'unread',
                 'lang': item.get('lang'),
                 'word_count': item.get('word_count'),
-                #'has_video': item.get('has_video')
+                'has_video': item.get('has_video')
             }
             processed.append(processed_item)
             
@@ -1060,86 +543,581 @@ class RaindropClient(WebContent):
         super().__init__(config)
         self.api_key = config.RAINDROP_TOKEN
         self.base_url = "https://api.raindrop.io/rest/v1/"
-        self.all_items = []
-        print('#'*7+' RaindropClient init '+ '#'*7)
+        self.filename_collection = 'raindrop_collections.csv'
+        self.filename_item = 'raindrop_items.csv'
 
-    def fetch_items(self, collection_name=None, tags=None, favorite=None):
-        """Raindrop API를 통해 아이템 목록화 및 주요 정보 획득"""
-        collection_id = self._get_collection_id_by_name(collection_name) if collection_name else None
-        params = {}
-        if tags:
-            params['tag'] = tags
-        if favorite is not None:
-            params['favorite'] = favorite
+    def fetch_content(self, identifier):
+        """Raindrop API를 통해 아이템 가져오기"""
+        items = self._fetch_raindrop_items(identifier)
+        
+        # 각 아이템의 웹 컨텐츠 가져오기
+        for item in items:
+            try:
+                item['content'] = self.fetch_web_content(item['link'])
+            except Exception as e:
+                print(f"Error fetching content for {item['link']}: {e}")
+                item['content'] = None
+                
+        return items
 
-        items = self._get_items(collection_id, params)
-        processed_items = self._process_items(items)
-        print(f"총 {len(processed_items)}개의 아이템을 처리합니다.")
-        return processed_items
-
-    def _get_collection_id_by_name(self, collection_name, collections=None):
-        """컬렉션 이름으로 컬렉션 ID를 가져옵니다."""
-        if collections is None:
-            url = f"{self.base_url}collections"
-            response = requests.get(url, headers={"Authorization": f"Bearer {self.api_key}"})
-            response.raise_for_status()
-            collections = response.json().get('items', [])
-
-        for collection in collections:
-            print(f"Checking collection: {collection.get('title')}")
-            if collection.get('title') == collection_name:
-                return collection.get('_id')
-            
-            # 하위 컬렉션이 있는 경우 재귀적으로 검색
-            if 'children' in collection:
-                child_id = self._get_collection_id_by_name(collection_name, collection['children'])
-                if child_id:
-                    return child_id
-
-        print(f"Collection '{collection_name}' not found.")
-        return None
-
-    def _get_items(self, collection_id, params):
+    def _fetch_raindrop_items(self, identifier):
         """Raindrop API에서 아이템 가져오기"""
-        if collection_id:
-            url = f"{self.base_url}raindrops/{collection_id}"
-        else:
-            url = f"{self.base_url}raindrops"
-
-        response = requests.get(url, headers={"Authorization": f"Bearer {self.api_key}"}, params=params)
+        url = f"{self.base_url}raindrops/{identifier}"
+        response = requests.get(url, headers={"Authorization": f"Bearer {self.api_key}"})
         response.raise_for_status()
         return response.json().get('items', [])
 
-    def _process_items(self, items):
-        """아이템의 주요 정보 처리"""
-        processed = []
+    def scrape_save(self):
+        ## Export result
+        bookmarks = self.get_bookmarks()
+        collections = self.get_collections()
+        items = self.get_item_from_collection(collections)
+        try:
+            Utils.save_file(collections, self.filename_collection)
+            Utils.save_file(items, self.filename_item)
+        except:
+            print('save error')
+ 
+    def get_collections(self):
+        url = self.base_url +"collections"
+        collections = self.get_response(url)
+
+        print('Collections: ', len(collections))
+        results = []
+        for collect in collections:
+            dict_collect = {
+                'title': collect['title'],
+                'id': collect['_id'],
+                'count': collect['count'],
+                'expanded': collect['expanded'],
+                #'access': collect['access'],
+                'parent':''
+                }
+
+            print(dict_collect)
+            results.append(dict_collect)
+
+        collections_child = self.get_child_collections()
+
+        results+=collections_child
+        return results
+
+    def get_child_collections(self):
+        url = self.base_url +"collections/childrens"
+        collections = self.get_response(url)
+        print('Collections: ', len(collections))
+        results = []
+        for collect in collections:
+            dict_collect = {
+                'title': collect['title'],
+                'id': collect['_id'],
+                'count': collect['count'],
+                'expanded': collect['expanded'],
+               # 'access': collect['access'],
+                'parent':collect['parent']
+                }
+            try: 
+                dict_collect['parent'] =collect['parent']['$ref']+ '_'+str(collect['parent']['$id'])
+            except:
+                print('parent parsing error.')
+            print(dict_collect)
+            results.append(dict_collect)
+        return results
         
-        
-        for item in items:
-            created_date_str = item.get('created', 'No Date')
-            created_date = datetime.fromisoformat(created_date_str.replace('Z', '+00:00'))
-            
-            processed_item = {
-                'title': item.get('title', 'No title'),
-                'url': item.get('link'),
-                'excerpt': item.get('excerpt'),
-                'time_added': created_date.isoformat(),
-                'tags': item.get('tags', []),
-                'favorite': item.get('important', False),
-                'status': item.get('status', 'Unknown'),
-                'lang': item.get('language', 'Unknown'),
-                'collection': item.get('collection', {}).get('title', 'Unknown'),
-                'source': item.get('domain', 'Unknown')
-            }
-            processed.append(processed_item)
-        return processed
+    def get_item_from_collection(self, collections):
+        items = []
+        for collect in tqdm(collections):
+            id = collect['id']
+            url = self.base_url+f'raindrops/{id}'
+            collect_items = self.get_response(url)
+            #collect_items = self.get_item_from_collection(collect['id'])
+            print('Items in the collection: ', len(collect_items))
+            for item in tqdm(collect_items):
+                id_item = item['_id']
+                url = self.base_url +"raindrop/{id_item}"
+                item_info = self.get_response(url)
+                dict_item ={
+                    'collection': collect['title'],
+                    'title': item['title'],
+                    'type': item['type'],
+                    'excerpt': item['excerpt'],
+                    'note': item['note'],
+                    'link': item['link'],
+                    'id': id_item,
+                    'cover': item['cover']
+                }
+                items.append(dict_item)
+        return items
+    
+
 
 #python -c "from pocket_sync import get_pocket_auth_token; get_pocket_auth_token()"
 
+class SearchEngine(WebContent):
+    def __init__(self, config):
+        super().__init__(config)
+        self.search_results = []
+        print('#'*7+'SearchEngine init'+'#'*7)
+    
+    @abstractmethod
+    def search(self, query: str, num_results: int = 10) -> List[Dict]:
+        """검색 결과를 가져오는 추상 메서드"""
+        pass
+
+class NaverSearch(SearchEngine):
+    def __init__(self, config):
+        super().__init__(config)
+        if not config.NAVER_CLIENT_ID or not config.NAVER_CLIENT_SECRET:
+            raise ValueError("네이버 API 키가 설정되지 않았습니다.")
+        self.client_id = config.NAVER_CLIENT_ID
+        self.client_secret = config.NAVER_CLIENT_SECRET
+        self.base_url = "https://openapi.naver.com/v1/search/blog"
+        self.sort_options = {
+            'sim': '정확도순',
+            'date': '날짜순'
+        }
+        print('#'*7+'NaverSearch init'+'#'*7)
+
+    def search(self, 
+              query: str, 
+              num_results: int = 10, 
+              sort: str = 'sim',  # 추가된 파라미터
+              start_date: str = None, 
+              end_date: str = None) -> List[Dict]:
+        """
+        네이버 블로그 검색 API 사용
+        
+        Args:
+            query (str): 검색어
+            num_results (int): 검색 결과 수 (기본값: 10)
+            sort (str): 정렬 방식 ('sim': 정확도순, 'date': 날짜순)
+            start_date (str): 검색 시작 날짜 (YYYY-MM-DD 형식)
+            end_date (str): 검색 종료 날짜 (YYYY-MM-DD 형식)
+        """
+        if sort not in self.sort_options:
+            raise ValueError(f"정렬 옵션은 {list(self.sort_options.keys())} 중 하나여야 합니다.")
+
+        headers = {
+            "X-Naver-Client-Id": self.client_id,
+            "X-Naver-Client-Secret": self.client_secret
+        }
+        
+        # 날짜 필터링을 위한 쿼리 수정
+        if start_date or end_date:
+            date_query = []
+            if start_date:
+                date_query.append(f"pd:from{start_date.replace('-', '')}")
+            if end_date:
+                date_query.append(f"pd:to{end_date.replace('-', '')}")
+            query = f"{query} {' '.join(date_query)}"
+        
+        search_results = []
+        start = 1
+        display = min(100, num_results)
+        
+        try:
+            params = {
+                "query": query,
+                "display": display,
+                "start": start,
+                "sort": sort
+            }
+            
+            response = requests.get(
+                self.base_url, 
+                headers=headers, 
+                params=params
+            )
+            
+            if response.status_code == 429:
+                print("API 호출 한도 초과. 잠시 후 다시 시도해주세요.")
+                return []
+                
+            response.raise_for_status()
+            data = response.json()
+            
+            print(f"\n총 검색 결과: {data.get('total', 0)}개")
+            print(f"정렬 방식: {self.sort_options.get(sort)}\n")
+            
+            for item in data.get("items", [])[:num_results]:
+                try:
+                    # HTML 태그 제거
+                    title = re.sub('<[^<]+?>', '', item["title"])
+                    description = re.sub('<[^<]+?>', '', item["description"])
+                    
+                    result = {
+                        "title": title,
+                        "description": description,
+                        "link": item["link"],
+                        "blogger_name": item["bloggername"],
+                        "post_date": item["postdate"],
+                        "content": None
+                    }
+                    
+                    # 블로그 본문 가져오기
+                    if 'blog.naver.com' in item["link"]:
+                        content = self._get_naver_blog_content(item["link"])
+                        if content:
+                            result["content"] = content
+                    
+                    search_results.append(result)
+                    print(f"수집 완료: {title}")
+                    
+                except Exception as e:
+                    print(f"항목 처리 중 오류 발생: {str(e)}")
+                    continue
+                    
+            return search_results
+            
+        except requests.exceptions.RequestException as e:
+            print(f"API 요청 중 오류 발생: {str(e)}")
+            return []
+
+    def _get_naver_blog_content(self, url: str) -> Optional[str]:
+        """네이버 블로그 본문 내용 추출"""
+        try:
+            response = requests.get(url)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # iframe 찾기
+            iframe = soup.find('iframe', id='mainFrame')
+            if iframe:
+                blog_url = f"https://blog.naver.com{iframe['src']}"
+                response = requests.get(blog_url)
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # 새로운 에디터
+                content = soup.find('div', {'class': 'se-main-container'})
+                if content:
+                    return content.get_text(strip=True)
+                    
+                # 구 에디터
+                content = soup.find('div', {'class': 'post-content'})
+                if content:
+                    return content.get_text(strip=True)
+                    
+            return None
+            
+        except Exception as e:
+            print(f"블로그 본문 추출 실패 ({url}): {str(e)}")
+            return None
+
+class GoogleSearch(SearchEngine):
+    def __init__(self, config):
+        super().__init__(config)
+        if not config.GOOGLE_API_KEY or not config.GOOGLE_SEARCH_ENGINE_ID:
+            raise ValueError("Google API 키 또는 Search Engine ID가 설정되지 않았습니다.")
+        self.api_key = config.GOOGLE_API_KEY
+        self.search_engine_id = config.GOOGLE_SEARCH_ENGINE_ID
+        self.base_url = "https://www.googleapis.com/customsearch/v1"
+        self.sort_options = {
+            'date': '날짜순',
+            None: '관련도순'
+        }
+        
+    def search(self, 
+              query: str, 
+              num_results: int = 10, 
+              sort: str = None, 
+              date_restrict: str = None,
+              site_restrict: str = None,
+              language: str = None,
+              country: str = None) -> List[Dict]:
+        """
+        Google Custom Search API를 사용하여 검색
+        
+        Args:
+            query (str): 검색어
+            num_results (int): 검색 결과 수 (기본값: 10)
+            sort (str): 정렬 방식 ('date': 날짜순, None: 관련도순)
+            date_restrict (str): 기간 제한 (예: 'd[number]': 일, 'w[number]': 주, 'm[number]': 월, 'y[number]': 년)
+            site_restrict (str): 특정 사이트 내 검색 (예: 'site:example.com')
+            language (str): 검색 언어 (예: 'lang_ko', 'lang_en')
+            country (str): 국가 제한 (예: 'countryKR', 'countryUS')
+        """
+        search_results = []
+        start = 1
+        
+        # 사이트 제한 쿼리 추가
+        if site_restrict:
+            query = f"{query} {site_restrict}"
+        
+        while len(search_results) < num_results:
+            try:
+                params = {
+                    "key": self.api_key,
+                    "cx": self.search_engine_id,
+                    "q": query,
+                    "num": min(10, num_results - len(search_results)),  # 최대 10개
+                    "start": start
+                }
+                
+                # 선택적 매개변수 추가
+                if sort == 'date':
+                    params["sort"] = "date:r:s"  # 최신순 정렬
+                if date_restrict:
+                    params["dateRestrict"] = date_restrict
+                if language:
+                    params["lr"] = language
+                if country:
+                    params["cr"] = country
+                
+                response = requests.get(self.base_url, params=params)
+                
+                if response.status_code == 429:  # Rate limit exceeded
+                    print("API 호출 한도 초과. 잠시 후 다시 시도해주세요.")
+                    break
+                    
+                response.raise_for_status()
+                data = response.json()
+                
+                if "items" not in data:
+                    break
+                
+                print(f"\n총 검색 결과: {data.get('searchInformation', {}).get('totalResults', 0)}개")
+                print(f"정렬 방식: {self.sort_options.get(sort, '관련도순')}\n")
+                
+                for item in data["items"]:
+                    try:
+                        result = {
+                            "title": item.get("title", ""),
+                            "description": item.get("snippet", ""),
+                            "link": item["link"],
+                            "date_published": item.get("pagemap", {}).get("metatags", [{}])[0].get("article:published_time"),
+                            "content": None
+                        }
+                        
+                        # 웹 페이지 본문 가져오기
+                        content = self.fetch_web_content(item["link"])
+                        if content:
+                            result["content"] = content
+                        
+                        search_results.append(result)
+                        print(f"수집 완료: {result['title']}")
+                        
+                        if len(search_results) >= num_results:
+                            break
+                            
+                    except Exception as e:
+                        print(f"항목 처리 중 오류 발생: {str(e)}")
+                        continue
+                
+                start += len(data["items"])
+                time.sleep(2)  # API 호출 간격 조절
+                
+            except requests.exceptions.RequestException as e:
+                print(f"API 요청 중 오류 발생: {str(e)}")
+                break
+                
+        return search_results[:num_results]
+
+    def fetch_web_content(self, url: str) -> Optional[str]:
+        """웹 페이지 본문 내용 추출"""
+        try:
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # 메타 태그 및 불필요한 요소 제거
+            for tag in soup(['script', 'style', 'meta', 'link']):
+                tag.decompose()
+            
+            # 본문 추출 시도
+            article = soup.find('article') or soup.find('main') or soup.find('div', class_='content')
+            if article:
+                text = article.get_text(separator='\n', strip=True)
+            else:
+                text = soup.get_text(separator='\n', strip=True)
+            
+            # 텍스트 정리
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
+            return '\n'.join(lines)
+            
+        except Exception as e:
+            print(f"본문 추출 실패 ({url}): {str(e)}")
+            return None
 
 
 
+def google_search_test(config):
+    try:
+        google_search = GoogleSearch(config)
+        
+        # 기본 검색 (관련도순)
+        results_relevance = google_search.search(
+            query="python programming",
+            num_results=5
+        )
+        print_google_results(results_relevance)
+        # 최신순 검색
+        results_date = google_search.search(
+            query="python programming",
+            num_results=5,
+            sort="date"
+        )
+        print_google_results(results_date)
+        # 특정 기간 내 검색 (최근 1개월)
+        results_period = google_search.search(
+            query="python programming",
+            num_results=5,
+            date_restrict="m1"
+        )
+        print_google_results(results_period)
+        # 특정 사이트 내 검색
+        results_site = google_search.search(
+            query="python programming",
+            num_results=5,
+            site_restrict="site:medium.com"
+        )
+        print_google_results(results_site)
+        # 한국어 결과만 검색
+        results_korean = google_search.search(
+            query="python programming",
+            num_results=5,
+            language="lang_ko",
+            country="countryKR"
+        )
+        print_google_results(results_korean)
+    except Exception as e:
+        print(f"오류 발생: {str(e)}")
 
+def print_naver_results(results):
+    try:
+        print(f"\n검색 결과: {len(results)}개\n")
+        for result in results:
+            print(f"제목: {result['title']}")
+            print(f"작성자: {result['blogger_name']}")
+            print(f"작성일: {result['post_date']}")
+            print(f"링크: {result['link']}")
+            if result['content']:
+                print(f"본문 일부: {result['content'][:100]}...")
+            print("-" * 50)
+            
+    except Exception as e:
+        print(f"오류 발생: {str(e)}")
+
+def naver_search_test(config):
+    try:
+        naver_search = NaverSearch(config)
+        
+        # 정확도순 검색
+        results_sim = naver_search.search(
+            query="ado 내한 공연",
+            num_results=5,
+            sort='sim'
+        )
+        print_naver_results(results_sim)
+        
+        # 최신순 검색
+        results_date = naver_search.search(
+            query="ado 내한 공연",
+            num_results=5,
+            sort='date'
+        )
+        print_naver_results(results_date)
+        # 특정 기간 검색
+        results_period = naver_search.search(
+            query="ado 내한 공연",
+            num_results=5,
+            sort='date',
+            start_date='2024-10-01',
+            end_date='2024-12-01'
+        )
+        print_naver_results(results_period)
+
+    except Exception as e:
+        print(f"오류 발생: {str(e)}")
+
+def print_naver_results(results):
+    try:
+        print(f"\n네이버 검색 결과: {len(results)}개\n")
+        for result in results:
+            print(f"제목: {result['title']}")
+            print(f"작성자: {result['blogger_name']}")
+            print(f"작성일: {result['post_date']}")
+            print(f"링크: {result['link']}")
+            if result['content']:
+                print(f"본문 일부: {result['content'][:200]}...")
+            print("-" * 50)
+            
+    except Exception as e:
+        print(f"결과 출력 중 오류 발생: {str(e)}")
+
+def print_google_results(results):
+    try:
+        print(f"\n구글 검색 결과: {len(results)}개\n")
+        for result in results:
+            print(f"제목: {result['title']}")
+            if result.get('date_published'):
+                print(f"작성일: {result['date_published']}")
+            print(f"링크: {result['link']}")
+            print(f"설명: {result['description']}")
+            if result.get('content'):
+                print(f"본문 일부: {result['content'][:200]}...")
+            print("-" * 50)
+            
+    except Exception as e:
+        print(f"결과 출력 중 오류 발생: {str(e)}")
+
+def print_search_results(results, search_engine='google'):
+    """통합 검색 결과 출력 함수"""
+    try:
+        print(f"\n{search_engine.upper()} 검색 결과: {len(results)}개\n")
+        
+        for i, result in enumerate(results, 1):
+            print(f"[결과 {i}]")
+            print(f"제목: {result['title']}")
+            
+            # 공통 필드
+            print(f"링크: {result['link']}")
+            print(f"설명: {result.get('description', '')}")
+            
+            # 검색 엔진별 특수 필드
+            if search_engine == 'naver':
+                if result.get('blogger_name'):
+                    print(f"작성자: {result['blogger_name']}")
+                if result.get('post_date'):
+                    print(f"작성일: {result['post_date']}")
+            elif search_engine == 'google':
+                if result.get('date_published'):
+                    print(f"작성일: {result['date_published']}")
+            
+            # 본문 내용 출력 (있는 경우)
+            if result.get('content'):
+                content_preview = result['content'][:200].replace('\n', ' ').strip()
+                print(f"본문 미리보기: {content_preview}...")
+            
+            print("-" * 50)
+            
+    except Exception as e:
+        print(f"결과 출력 중 오류 발생: {str(e)}")
+
+def search_test(config):
+    """검색 테스트 함수"""
+    try:
+ 
+        # 구글 검색 테스트
+        google_search = GoogleSearch(config)
+        google_results = google_search.search(
+            query="prompt flow",
+            num_results=3,
+            sort='date',
+            language='lang_ko',
+            country='countryKR'
+        )
+        print_search_results(google_results, 'google')
+        
+    except Exception as e:
+        print(f"검색 테스트 중 오류 발생: {str(e)}")
+
+if __name__ == "__main__":
+    from config import Config
+    config = Config()
+    google_search_test(config)
+    naver_search_test(config)
+    
+    
 
 
 
