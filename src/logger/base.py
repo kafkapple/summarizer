@@ -379,33 +379,81 @@ class NotionBase:
                 if len(children) < max_blocks: children.append(self.create_text_block(""))
 
             # 4. 핵심 요약 (Core Summary) - 구조 변경
-            structured_core_summary = summary_dict.get('core_summary', []) # [{title:'..', points:['..',..]}, ..]
+            core_summary_points = summary_dict.get('core_summary') # sum.py에서 생성된 문자열
+            sections_for_core = summary_dict.get('sections', [])
+            chapters_for_core = summary_dict.get('chapters', []) if self.cfg.get('enable_chapters', True) else []
 
-            if structured_core_summary and isinstance(structured_core_summary, list) and len(children) < max_blocks:
-                children.append(self.create_text_block("Core Summary", "heading_2"))
+            if core_summary_points and len(children) < max_blocks: # core_summary 문자열이 있을 때만 표시
+                 children.append(self.create_text_block("Core Summary", "heading_2"))
 
-                core_group_counter = 1
-                for core_item in structured_core_summary:
-                    if len(children) >= max_blocks: break
-                    if isinstance(core_item, dict):
-                        item_title = core_item.get('title', f'Topic {core_group_counter}')
-                        item_points = core_item.get('points', [])
+                 # 챕터 기반으로 그룹화 시도
+                 if chapters_for_core and isinstance(chapters_for_core, list):
+                     core_group_counter = 1
+                     for chap_idx, chapter in enumerate(chapters_for_core):
+                         if len(children) >= max_blocks: break
+                         if isinstance(chapter, dict):
+                             chap_title = chapter.get("chapter_title", f"Chapter {chap_idx+1}")
+                             # 챕터 제목 추가 (넘버링 포함)
+                             if len(children) < max_blocks: children.append(self.create_text_block(f"{core_group_counter}. {chap_title}", "heading_3", keywords=highlight_keywords_terms))
+                             core_group_counter += 1
 
-                        # 핵심 주제 제목 (넘버링 포함)
-                        if len(children) < max_blocks: children.append(self.create_text_block(f"{core_group_counter}. {item_title}", "heading_3", keywords=highlight_keywords_terms))
-                        core_group_counter += 1
+                             chapter_sections = chapter.get('sections', [])
+                             if isinstance(chapter_sections, list):
+                                 for segment in chapter_sections:
+                                     if len(children) >= max_blocks: break
+                                     if isinstance(segment, dict):
+                                         # 섹션별 core point 추출 (기존 _format_core_summary 로직 참고)
+                                         section_summary = segment.get('summary', [])
+                                         core_bullets = []
+                                         if isinstance(section_summary, list):
+                                             core_bullets = [s.strip() for s in section_summary if isinstance(s, str) and s.strip()]
+                                         elif isinstance(section_summary, str) and section_summary.strip():
+                                             core_bullets = [section_summary.strip()]
 
-                        # 핵심 주제별 bullet points
-                        if isinstance(item_points, list):
-                            for point in item_points:
-                                if len(children) >= max_blocks: break
-                                if isinstance(point, str) and point.strip():
-                                    children.append(self.create_bulleted_list_item(point, keywords=highlight_keywords_terms))
-                        elif isinstance(item_points, str) and item_points.strip(): # 혹시 문자열로 올 경우
-                            if len(children) < max_blocks:
-                                 children.append(self.create_bulleted_list_item(item_points, keywords=highlight_keywords_terms))
+                                         for point in core_bullets:
+                                             if len(children) >= max_blocks: break
+                                             children.append(self.create_bulleted_list_item(point, keywords=highlight_keywords_terms))
+                                 if len(children) < max_blocks: children.append(self.create_text_block("")) # 챕터 내 섹션 그룹 후 공백
+                             else: # 챕터에 섹션 정보가 없을 경우, 챕터 요약이라도 표시 시도
+                                chap_summary_str = chapter.get('summary', '')
+                                if chap_summary_str and len(children) < max_blocks:
+                                     children.append(self.create_text_block(chap_summary_str[:2000], "paragraph", keywords=highlight_keywords_terms))
+                                if len(children) < max_blocks: children.append(self.create_text_block(""))
+                         if len(children) >= max_blocks: break # 챕터 루프 탈출
 
-                        if len(children) < max_blocks: children.append(self.create_text_block("")) # 각 핵심 주제 그룹 후 공백
+                 # 챕터가 없거나 비활성화 시, 섹션 기반으로 그룹화 (기존 방식과 유사하지만 제목 추가)
+                 elif sections_for_core and isinstance(sections_for_core, list):
+                     core_group_counter = 1
+                     for i, segment in enumerate(sections_for_core):
+                         if len(children) >= max_blocks: break
+                         if isinstance(segment, dict):
+                             sec_title = segment.get("title", f"Section {i+1}")
+                             # 섹션 제목 추가 (넘버링 포함)
+                             if len(children) < max_blocks: children.append(self.create_text_block(f"{core_group_counter}. {sec_title}", "heading_3", keywords=highlight_keywords_terms))
+                             core_group_counter += 1
+
+                             # 섹션별 core point 추출
+                             section_summary = segment.get('summary', [])
+                             core_bullets = []
+                             if isinstance(section_summary, list):
+                                 core_bullets = [s.strip() for s in section_summary if isinstance(s, str) and s.strip()]
+                             elif isinstance(section_summary, str) and section_summary.strip():
+                                 core_bullets = [section_summary.strip()]
+
+                             for point in core_bullets:
+                                 if len(children) >= max_blocks: break
+                                 children.append(self.create_bulleted_list_item(point, keywords=highlight_keywords_terms))
+                             if len(children) < max_blocks: children.append(self.create_text_block("")) # 섹션 그룹 후 공백
+                         if len(children) >= max_blocks: break # 섹션 루프 탈출
+
+                 # 챕터/섹션 구조 없이 core_summary 문자열만 있는 경우 (fallback)
+                 else:
+                     if isinstance(core_summary_points, str) and core_summary_points.strip():
+                          # 단순 텍스트 블록으로 표시
+                          if len(children) < max_blocks: children.append(self.create_text_block(core_summary_points[:2000], "paragraph", keywords=highlight_keywords_terms))
+                 
+                 if len(children) < max_blocks: children.append(self.create_text_block("")) # Core Summary 섹션 전체 후 공백
+
 
             # 5. 섹션별 상세 요약 (Detailed Summary Sections) - 넘버링 추가
             sections = summary_dict.get('sections', [])

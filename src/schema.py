@@ -5,7 +5,7 @@ def get_default_summary_schema() -> Dict[str, Any]:
     return {
         'one_sentence_summary': "",
         'full_summary': "",
-        'core_summary': [],       # List of dicts, e.g., [{'title': 't1', 'points': ['p1', 'p2']}]
+        'core_summary': "",
         'sections_summary': "",
         'keywords': [],           # List of dicts, e.g., [{'term': 'kw1'}, ...]
         'sections': [],           # List of dicts, e.g., [{'title': 't1', 'summary': 's1'}, ...]
@@ -17,8 +17,7 @@ def get_default_summary_schema() -> Dict[str, Any]:
             'output_language': None
         },
         'summary_strategy_used': None, # Name of the strategy actually used
-        'full_text': None,        # Optional: Full original text (if included)
-        'all_bullet_points': ""   # String containing all bullet points from all sections
+        'full_text': None         # Optional: Full original text (if included)
     }
 
 def get_minimal_summary_schema() -> Dict[str, Any]:
@@ -27,8 +26,7 @@ def get_minimal_summary_schema() -> Dict[str, Any]:
     schema = get_default_summary_schema().copy() # Use copy to avoid modifying original
     
     # Fields often not present in minimal summaries
-    schema.pop('core_summary', None) # Keep structure consistent, but expect empty list
-    schema.pop('all_bullet_points', None)
+    schema.pop('core_summary', None)
     schema.pop('sections_summary', None)
     schema.pop('keywords', None)
     schema.pop('sections', None)
@@ -46,6 +44,5 @@ def get_refine_summary_schema() -> Dict[str, Any]:
     return {
         'one_sentence_summary': "",
         'full_summary': "",
-        # Other fields like core_summary are not expected from this specific call
-        # The 'refine' LLM task only returns these two fields.
+        # Other fields are not expected from this specific call
     }

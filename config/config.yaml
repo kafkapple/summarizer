@@ -25,7 +25,7 @@ output:
 # LLM 설정
 llm:
   provider: ollama  # ollama로 변경
-  model: gemma3 # gemma:3b 모델 사용
+  model: gemma3:1b # gemma:3b 모델 사용
   temperature: 0.3
   max_tokens: 4000
   max_token_response: 1000
