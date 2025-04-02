@@ -1,0 +1,190 @@
+defaults:
+  - _self_
+
+# 기본 설정
+debug: true
+debug_llm: true
+verbose: true
+log_level: DEBUG  # 로깅 레벨을 DEBUG로 설정
+
+# 요약 옵션
+enable_chapters: true
+include_keywords: false
+include_full_text: false
+highlight_keywords: false
+
+# 소스 설정
+source: youtube
+playlist_url: https://youtube.com/playlist?list=PLuLudIpu5Vin2cXj55NSzqdWceBQFxTso&si=gy97IE2Ocryr8QRM
+tags: ["_untagged_"]
+
+# 출력 설정
+output:
+  language: ko
+
+# LLM 설정
+llm:
+  provider: ollama  # ollama로 변경
+  model: gemma3 # gemma:3b 모델 사용
+  temperature: 0.3
+  max_tokens: 4000
+  max_token_response: 1000
+  min_token_response: 500
+  max_chunks_per_chapter: 4
+  ollama:
+    url: http://localhost:11434
+  openai:
+    model: gpt-3.5-turbo
+    max_tokens: 4000
+    prompt_token: 4000
+
+# Few-shot 설정
+few_shot:
+  enabled: false
+  examples: []
+
+# 프롬프트 설정
+prompt:
+  system_content: |
+    You are a professional content summarizer. Your task is to analyze the given content and create a comprehensive summary in {language}.
+    IMPORTANT: You MUST provide the summary in Korean (한국어) if the target language is Korean.
+    
+    Guidelines:
+    1. Extract key information and main points
+    2. Identify important keywords and concepts
+    3. Organize the content into logical sections
+    4. Provide a concise one-sentence summary
+    5. Maintain the original meaning while being clear and concise
+    6. If the text contains chapters or sections, preserve their structure
+    7. Highlight any important quotes or key phrases
+    8. Include relevant statistics or data points
+    9. Note any significant conclusions or recommendations
+    10. If the text is technical, explain complex concepts in simpler terms
+
+  instruction_output: |
+    IMPORTANT: You MUST provide your response in Korean (한국어) if the target language is Korean.
+    Please format your response as a JSON object with the following structure:
+    {
+      "one_sentence_summary": "한 문장 요약",
+      "full_summary": ["주요 포인트 1", "주요 포인트 2", ...],
+      "sections": [
+        {
+          "title": "섹션 제목",
+          "summary": ["상세 포인트 1", "상세 포인트 2", "상세 포인트 3", ...]
+        }
+      ],
+      "keywords": [
+        {
+          "term": "키워드",
+          "frequency": 1
+        }
+      ]
+    }
+
+# 요약 전략
+summary:
+  strategy: default # Options: default, stuff, map_reduce, refine
+  include_keywords: true
+  highlight_keywords: true
+  enable_chapters: true
+  include_full_text: false
+  prompt_template: ${prompt.system_content}
+
+# Notion 설정
+notion:
+  database_id: ${oc.env:NOTION_DATABASE_ID}
+  youtube_ch_id: ${oc.env:NOTION_DB_YOUTUBE_CH_ID}
+  raindrop_id: ${oc.env:NOTION_DB_RAINDROP_ID}
+  pocket_id: ${oc.env:NOTION_DB_POCKET_ID}
+  mapping:
+    Title:
+      key: title
+      type: title
+    URL:
+      key: url
+      type: url
+    # Description: # Notion에 해당 속성이 없으므로 주석 처리 또는 삭제
+    #  key: description
+    #  type: rich_text
+    Category:
+      key: category
+      type: select # multi_select -> select 변경
+    Channel:
+      key: channel
+      type: select
+    Duration:
+      key: duration
+      type: rich_text # number -> rich_text 변경
+    "Like Count":
+      key: like_count
+      type: number
+    "Comment Count":
+      key: comment_count
+      type: number
+    Chapters:
+      key: chapters # 실제 chapters 데이터를 사용할 경우 키 확인 필요 (summary.sections_summary 사용 가능성)
+      type: rich_text
+    "Output Language":
+      key: output_language # data['summary']['model']['output_language'] 에서 가져오도록 base.py가 처리
+      type: select
+    Keywords:
+      key: keywords # data['summary']['keywords'] 에서 가져오도록 base.py가 처리
+      type: multi_select # 키워드는 여러 개일 수 있으므로 multi_select 유지 (Notion 타입 확인 필요)
+    Summary:
+      key: summary # data['summary']['full_summary'] 에서 가져오도록 base.py가 처리
+      type: rich_text
+    Favorite:
+      key: favorite
+      type: checkbox
+    Status:
+      key: status
+      type: select
+    "Word Count":
+      key: word_count
+      type: number
+    "Created At":
+      key: created_at
+      type: date
+    "Updated At":
+      key: updated_at
+      type: date
+    Model:
+      key: gpt_model # data['summary']['model']['model'] 에서 가져오도록 base.py가 처리 (base.py 수정 필요할 수 있음)
+      type: select
+    # "Core Summary": # Notion에 해당 속성이 없으므로 주석 처리 또는 삭제
+    #  key: core_summary
+    #  type: rich_text
+    "One Sentence Summary":
+      key: one_sentence_summary # data['summary']['one_sentence_summary'] 에서 가져오도록 base.py가 처리
+      type: rich_text
+    "Full Text":
+      key: full_text
+      type: rich_text
+    # "Keywords Original": # 필요 시 추가
+    #  key: keywords_original
+    #  type: rich_text
+    # "Summary Strategy": # Notion에 해당 속성이 없으므로 주석 처리 또는 삭제
+    #  key: summary_strategy
+    #  type: select
+
+# 경로 설정
+paths:
+  base: ${oc.env:BASE_PATH}
+  src: ${paths.base}/src
+  save: ${paths.base}/save
+  result: ${paths.base}/outputs
+
+# API 키 설정
+api_keys:
+  youtube: ${oc.env:YOUTUBE_API_KEY}
+  openai: ${oc.env:OPENAI_API_KEY}
+  notion: ${oc.env:NOTION_TOKEN}
+  diffbot: ${oc.env:DIFFBOT_API_TOKEN}
+  deepl: ${oc.env:DEEPL_API_KEY}
+  raindrop: ${oc.env:RAINDROP_TOKEN}
+  pocket_consumer: ${oc.env:POCKET_CONSUMER_KEY}
+  pocket_access: ${oc.env:POCKET_ACCESS_TOKEN}
+  naver_client_id: ${oc.env:NAVER_CLIENT_ID}
+  naver_client_secret: ${oc.env:NAVER_CLIENT_SECRET}
+  google: ${oc.env:GOOGLE_API_KEY}
+  google_search_engine: ${oc.env:GOOGLE_SEARCH_ENGINE_ID}
