@@ -6,7 +6,6 @@ __pycache__/
 *.env
 token.json
 client_secret.json
-src/
 save/
 # C extensions
 *.so
