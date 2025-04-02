@@ -7,7 +7,7 @@ import tiktoken
 from typing import List, Union, Dict
 import logging
 import json
-
+print("utils.py loaded")
 class Utils:
     def __init__(self):
         self.script_dir = self.get_script_directory()

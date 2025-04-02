@@ -493,12 +493,13 @@ class LangChainSummarizer:
             # 2. 섹션별 요약 생성 (기존 방식 유지)
             sections_summary_str = self._format_sections_summary(all_sections)
             
-            # 3. 핵심 주제 추출 (기존 방식 유지)
-            core_summary_str = self._format_core_summary(all_sections)
+            # 3. 모든 불릿 포인트 추출 (기존 core_summary 로직 -> 이름 변경)
+            all_bullet_points_str = self._extract_all_bullet_points(all_sections)
 
             # 4. 최종 요약 생성 (새로운 LLM 호출)
             final_one_sentence_summary = ""
             final_full_summary = ""
+            structured_core_summary = [] # LLM 호출로 생성될 구조화된 핵심 요약
 
             if sections_summary_str.strip(): # 병합된 내용이 있을 경우에만 최종 요약 시도
                 if self.debug_llm:
@@ -544,16 +545,42 @@ class LangChainSummarizer:
                     # Fallback 수정: 첫번째 청크의 한 문장 요약 사용
                     if chunk_summaries and isinstance(chunk_summaries[0], dict):
                         final_one_sentence_summary = chunk_summaries[0].get('one_sentence_summary', '')
-            else:
-                logger.warning("Skipping final refinement LLM call because merged sections summary is empty.")
-                # 병합할 내용이 없을 때 fallback 처리 추가
-                final_full_summary = ""
-                final_one_sentence_summary = ""
+
+            # 5. 핵심 주제 요약 생성 (별도 LLM 호출) - refine 호출 성공 여부와 관계없이 시도
+            # refine 결과(final_full_summary)가 있으면 그것을, 없으면 sections_summary_str을 컨텍스트로 사용
+            core_context = final_full_summary if final_full_summary else sections_summary_str
+            if core_context and self.cfg.summary.get('generate_core_summary', True): # 설정값 확인
+                if self.debug_llm:
+                    debug_logger.debug("===== Calling LLM for High-Level Core Summary =====")
+                    debug_logger.debug(f"Input context length: {len(core_context)}")
+                try:
+                    core_summary_result = await self.llm_interface.invoke_llm(
+                        chunk=core_context,
+                        task_type="generate_core", # 새로운 task_type 정의 필요
+                        title=title
+                    )
+                    if core_summary_result and isinstance(core_summary_result.get('core_summary'), list):
+                        structured_core_summary = core_summary_result['core_summary']
+                        if self.debug_llm:
+                            debug_logger.debug("Core Summary LLM call successful.")
+                            debug_logger.debug(f"Generated Core Summary: {structured_core_summary}")
+                    else:
+                         logger.warning("Core Summary LLM call returned no valid result.")
+                         if self.debug_llm:
+                             debug_logger.warning(f"Invalid response from core summary LLM: {core_summary_result}")
+
+                except Exception as core_e:
+                    logger.error(f"Error during core summary generation LLM call: {str(core_e)}")
+                    if self.debug_llm:
+                        debug_logger.error(f"Error during core summary generation LLM call: {str(core_e)}", exc_info=True)
+            elif not core_context:
+                 logger.warning("Skipping core summary generation because input context is empty.")
 
             result = {
                 'sections_summary': sections_summary_str,
                 'full_summary': final_full_summary, # 최종 LLM 결과 사용
-                'core_summary': core_summary_str, # 기존 방식 유지
+                'core_summary': structured_core_summary, # 새로운 구조화된 LLM 결과 사용
+                'all_bullet_points': all_bullet_points_str, # 모든 불릿 포인트 모음 (내부용)
                 'one_sentence_summary': final_one_sentence_summary, # 최종 LLM 결과 사용
                 'keywords': all_keywords,
                 'sections': all_sections, # 병합된 섹션 정보 유지
@@ -604,6 +631,33 @@ class LangChainSummarizer:
             포맷팅된 전체 요약
         """
         return "\n".join(summaries)
+
+    def _extract_all_bullet_points(self, sections: List[Dict]) -> str:
+        """
+        모든 섹션에서 bullet point들을 추출하여 하나의 문자열로 합침 (구조 정보 없음)
+        
+        Args:
+            sections: 섹션 정보 리스트
+            
+        Returns:
+            포맷팅된 모든 불릿 포인트 문자열
+        """
+        core_points = []
+        for section in sections:
+            # 각 섹션의 핵심 내용만 추출
+            section_summary = section.get('summary', '')
+            if isinstance(section_summary, list):
+                # 리스트인 경우, 각 항목을 불릿 포인트로 만들어 합침
+                processed_summary = "\n".join([f"- {s.strip()}" for s in section_summary if isinstance(s, str) and s.strip()])
+                if processed_summary: # 빈 문자열이 아니면 추가
+                     core_points.append(processed_summary)
+            elif isinstance(section_summary, str) and section_summary.strip():
+                # 문자열이고 내용이 있으면 추가 (앞에 불릿 추가)
+                core_points.append(f"- {section_summary.strip()}")
+            # 필요시 다른 타입 처리 추가
+            
+        # 최종적으로 모든 핵심 내용을 하나의 문자열로 결합
+        return "\n".join(core_points)
 
     def _format_core_summary(self, sections: List[Dict]) -> str:
         """
@@ -665,7 +719,8 @@ class LangChainSummarizer:
             'full_summary': merged_summary.get('full_summary', ''),
             
             # 3. 핵심 주제 (간단한 요약)
-            'core_summary': merged_summary.get('core_summary', ''),
+            'core_summary': merged_summary.get('core_summary', []), # 구조화된 리스트
+            'all_bullet_points': merged_summary.get('all_bullet_points', ''), # 모든 불릿포인트 문자열
             
             # 4. 한 문장 요약 (가장 간단)
             'one_sentence_summary': merged_summary.get('one_sentence_summary', ''),
@@ -715,12 +770,17 @@ class LangChainSummarizer:
                     if section.get('summary'):
                         if isinstance(section['summary'], list):
                             section['summary'] = [translator.translate(item) for item in section['summary']]
-                        else:
+                        elif isinstance(section['summary'], str): # 문자열인 경우만 번역
                             section['summary'] = translator.translate(section['summary'])
             
-            # 핵심 주제 번역
-            if summary.get('core_summary'):
-                summary['core_summary'] = translator.translate(summary['core_summary'])
+            # 핵심 주제 번역 (구조화됨: [{'title': '...', 'points': ['...']}, ...])
+            if isinstance(summary.get('core_summary'), list):
+                for core_item in summary['core_summary']:
+                    if isinstance(core_item, dict):
+                        if core_item.get('title'):
+                            core_item['title'] = translator.translate(core_item['title'])
+                        if isinstance(core_item.get('points'), list):
+                            core_item['points'] = [translator.translate(p) for p in core_item['points'] if isinstance(p, str)]
             
             return summary
             

@@ -7,7 +7,7 @@ from langchain.llms.base import BaseLLM
 from omegaconf import DictConfig
 import json
 
-from src.schema import get_default_summary_schema, get_refine_summary_schema # Import schema functions
+from src.schema import  get_refine_summary_schema # Import schema functions
 
 # from src.schema import get_default_summary_schema, get_refine_summary_schema # 주석 처리 (파일 생성 후 활성화)
 
