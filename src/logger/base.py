@@ -160,57 +160,104 @@ class NotionBase:
             return [{'text': {'content': truncated_text}}]
 
     def _save_summary_to_md(self, data: Dict, filepath: str):
-        """요약을 마크다운 파일로 저장"""
+        """요약을 마크다운 파일로 저장 (Notion 블록 순서와 유사하게)"""
         try:
+            # 데이터 추출
+            title = data.get('title', 'Untitled')
+            url = data.get('url')
+            description = data.get('description')
+
             summary_data = data.get('summary', {})
             if not isinstance(summary_data, dict):
                 logger.warning("Cannot save summary to MD: 'summary' key does not contain a dictionary.")
                 return
 
+            one_sentence = summary_data.get('one_sentence_summary', '')
+            full_summary = summary_data.get('full_summary', '')
+            keywords = summary_data.get('keywords', [])
+            chapters = summary_data.get('chapters', [])
+            sections = summary_data.get('sections', [])
+            summary_strategy = summary_data.get('summary_strategy_used', data.get('summary_strategy'))
+
             with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(f"# {data.get('title', 'Untitled')}\n\n")
+                # 1. 제목 및 URL
+                f.write(f"# {title}\n\n")
+                if url:
+                    f.write(f"**URL:** {url}\n\n")
 
-                if data.get('url'):
-                    f.write(f"**URL:** {data['url']}\n\n")
-
-                one_sentence = summary_data.get('one_sentence_summary', '')
+                # 2. 한 문장 요약
                 if one_sentence:
                     f.write(f"**One Sentence Summary:** {one_sentence}\n\n")
 
-                full_summary = summary_data.get('full_summary', '')
+                # 3. 전체 요약
                 if full_summary:
                     f.write("## Full Summary\n")
                     f.write(f"{full_summary}\n\n")
 
-                keywords = summary_data.get('keywords', [])
-                if keywords:
-                    f.write("## Keywords\n")
-                    keyword_terms = [kw.get('term', '') for kw in keywords if kw.get('term')]
-                    f.write(f"- {', '.join(keyword_terms)}\n\n")
-
-                chapters = summary_data.get('chapters', [])
-                sections = summary_data.get('sections', [])
-
+                # 4. 상세 섹션별 요약 (Chapters & Sections / Sections)
                 if chapters:
-                    f.write("## Chapters & Sections\n")
-                    for chap in chapters:
-                        chapter_number = chap.get('chapter_number', '')
-                        default_title = f'Chapter {chapter_number}' if chapter_number else 'Chapter'
-                        chapter_title = chap.get('chapter_title', default_title)
-                        f.write(f"### {chapter_title}\n")
+                    f.write("## Detailed Summary Sections\n\n")
+                    for chap_idx, chap in enumerate(chapters):
+                        # 챕터 제목 (Notion과 동일하게 numbered_title 사용 시도, 없으면 생성)
+                        chap_title_display = chap.get('numbered_title', f"{chap_idx+1}. {chap.get('chapter_title', f'Chapter {chap_idx+1}')}")
+                        f.write(f"### {chap_title_display}\n\n") # Markdown heading level 3
+
+                        section_counter = 1 # 챕터 내 섹션 넘버링
                         for sec_idx, sec in enumerate(chap.get('sections', [])):
-                            f.write(f"#### {sec_idx + 1}. {sec.get('title', 'Section')}\n")
-                            for point in sec.get('summary', []):
-                                f.write(f"- {point}\n")
-                            f.write("\n")
+                            sec_title = sec.get('title', f'Section {sec_idx+1}')
+                            sec_title_display = f"{section_counter}. {sec_title}"
+                            f.write(f"#### {sec_title_display}\n") # Markdown heading level 4
+                            section_counter += 1
+
+                            summary_content = sec.get('summary', [])
+                            if isinstance(summary_content, list):
+                                for point in summary_content:
+                                    if isinstance(point, str):
+                                        f.write(f"- {point}\n")
+                            elif isinstance(summary_content, str):
+                                f.write(f"{summary_content}\n") # 문자열이면 그대로 출력
+
                         f.write("\n")
                 elif sections:
-                    f.write("## Sections\n")
+                    f.write("## Detailed Summary Sections\n\n")
                     for sec_idx, sec in enumerate(sections):
-                        f.write(f"### {sec_idx + 1}. {sec.get('title', 'Section')}\n")
-                        for point in sec.get('summary', []):
-                            f.write(f"- {point}\n")
+                        # 챕터 없을 시 섹션 제목에 넘버링 (heading level 3)
+                        sec_title_display = f"{sec_idx+1}. {sec.get('title', f'Section {sec_idx+1}')}"
+                        f.write(f"### {sec_title_display}\n\n")
+
+                        summary_content = sec.get('summary', [])
+                        if isinstance(summary_content, list):
+                            for point in summary_content:
+                                if isinstance(point, str):
+                                    f.write(f"- {point}\n")
+                        elif isinstance(summary_content, str):
+                            f.write(f"{summary_content}\n") # 문자열이면 그대로 출력
+
                         f.write("\n")
+
+                # 5. 키워드
+                if keywords:
+                    f.write("## Keywords\n")
+                    keyword_strings = []
+                    for kw in keywords:
+                        if isinstance(kw, dict):
+                            term = kw.get('term', 'N/A')
+                            freq = kw.get('frequency')
+                            keyword_strings.append(f"{term}{f' ({freq})' if freq else ''}")
+                        elif isinstance(kw, str):
+                            keyword_strings.append(kw)
+                    if keyword_strings:
+                        f.write(f"- {', '.join(keyword_strings)}\n\n")
+
+                # 6. 요약 전략
+                if summary_strategy:
+                    f.write("## Summary Strategy Used\n")
+                    f.write(f"{summary_strategy}\n\n")
+
+                # 7. 설명
+                if description:
+                    f.write("## Description\n")
+                    f.write(f"{description}\n\n")
 
             if not self.quiet:
                 logger.info(f"Detailed summary saved to: {filepath}")

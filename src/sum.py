@@ -25,6 +25,10 @@ from src.utils import setup_logging
 from src.llm_interface import LLMInterface
 from src.schema import get_default_summary_schema, get_minimal_summary_schema # 스키마 import 활성화
 
+from langchain.chains import MapReduceDocumentsChain, ReduceDocumentsChain, StuffDocumentsChain, RefineDocumentsChain
+from langchain_core.documents import Document
+from collections import Counter
+
 # from src.schema import get_default_summary_schema, get_minimal_summary_schema # 주석 처리
 
 logger, debug_logger = setup_logging()
@@ -736,3 +740,124 @@ class LangChainSummarizer:
             except Exception as e:
                 logger.error(f"Error loading few-shot examples: {e}")
         return ""
+
+    async def _summarize_multi_chain(self, text: str, title: Optional[str] = None) -> Dict:
+        """다중 LangChain 체인을 사용하여 요약을 생성합니다 (비동기)."""
+        logger.info(f"Starting multi_chain summarization for: {title or 'Untitled'}")
+        default_summary = get_default_summary_schema()
+        default_summary['summary_strategy_used'] = 'multi_chain'
+
+        try:
+            # 0. LLM 및 기본 설정 가져오기
+            llm = self.llm_interface.get_llm()
+            if not llm:
+                logger.error("LLM not available for multi_chain strategy.")
+                return default_summary
+
+            # 1. 텍스트 청킹
+            chunks = self.text_splitter.split_text(text)
+            if not chunks:
+                logger.warning("No text chunks generated for multi_chain strategy.")
+                return default_summary
+            doc_chunks = [Document(page_content=chunk) for chunk in chunks]
+            logger.debug(f"Split text into {len(doc_chunks)} chunks for multi_chain.")
+
+            # 2. Section-Level Summarization (Map Only)
+            section_prompt_template = self.cfg.prompt.get('multi_chain_section_structured')
+            if not section_prompt_template:
+                logger.error("Prompt 'multi_chain_section_structured' not found in config.")
+                return default_summary
+            section_prompt = PromptTemplate(template=section_prompt_template, input_variables=["text"])
+            section_chain = LLMChain(llm=llm, prompt=section_prompt)
+
+            # 각 청크에 대해 비동기적으로 LLMChain 실행
+            tasks = [section_chain.arun(chunk) for chunk in chunks] # Use arun for single input
+            section_results_raw = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # 결과 처리 및 파싱
+            section_data_list = []
+            all_keywords_list = []
+            logger.debug(f"Processing {len(section_results_raw)} raw results from section summarization.")
+            for i, result in enumerate(section_results_raw):
+                if isinstance(result, Exception):
+                    logger.error(f"Error processing chunk {i} for section summary: {result}")
+                    continue
+                # gather에서 예외를 처리했으므로, 여기서는 성공한 결과만 처리
+                parsed = self.llm_interface._process_json_response(result) # Use existing JSON parser
+                if parsed and 'title' in parsed and 'summary_points' in parsed and 'keywords' in parsed:
+                    # 스키마에 맞게 키 이름 변경 및 데이터 정리
+                    section_data = {
+                        'title': parsed['title'],
+                        'summary': parsed['summary_points'] # summary_points -> summary
+                    }
+                    section_data_list.append(section_data)
+                    if isinstance(parsed['keywords'], list):
+                        all_keywords_list.extend([kw for kw in parsed['keywords'] if isinstance(kw, str)])
+                else:
+                    logger.warning(f"Chunk {i} result parsing failed or missing keys. Raw: {result[:100]}...")
+                    # 여기서 파싱 실패 시 에러를 발생시키거나 기본값을 넣는 대신, 단순히 경고만 기록하고 넘어감
+ 
+            logger.info(f"Generated {len(section_data_list)} section summaries.")
+
+            # 3. Medium-Level Summarization (Refine)
+            medium_initial_template = self.cfg.prompt.get('multi_chain_medium_initial')
+            medium_refine_template = self.cfg.prompt.get('multi_chain_medium_refine')
+            if not medium_initial_template or not medium_refine_template:
+                 logger.error("Prompts for medium summary (initial/refine) not found in config.")
+                 return default_summary
+
+            medium_summary_prompt = PromptTemplate(template=medium_initial_template, input_variables=["text"])
+            refine_prompt = PromptTemplate(template=medium_refine_template, input_variables=["existing_summary", "text"])
+
+            medium_summary_chain = RefineDocumentsChain(
+                initial_llm_chain=LLMChain(llm=llm, prompt=medium_summary_prompt),
+                refine_llm_chain=LLMChain(llm=llm, prompt=refine_prompt),
+                document_variable_name="text",
+                initial_response_name="existing_summary"
+            )
+            medium_summary = await medium_summary_chain.arun(doc_chunks)
+            logger.info("Generated medium-level summary.")
+
+            # 4. Single-Sentence Summarization (from Medium Summary)
+            single_sentence = ""
+            if medium_summary:
+                 single_prompt_template = self.cfg.prompt.get('multi_chain_single_from_medium')
+                 if not single_prompt_template:
+                     logger.error("Prompt 'multi_chain_single_from_medium' not found in config.")
+                 else:
+                     single_prompt = PromptTemplate(template=single_prompt_template, input_variables=["text"])
+                     single_chain = LLMChain(llm=llm, prompt=single_prompt)
+                     single_sentence = await single_chain.arun(medium_summary)
+                     logger.info("Generated single-sentence summary from medium summary.")
+            else:
+                 logger.warning("Skipping single-sentence summary generation as medium summary is empty.")
+
+            # 5. 결과 매핑 및 통합
+            final_summary = get_default_summary_schema()
+            final_summary['one_sentence_summary'] = single_sentence.strip() if single_sentence else ""
+            final_summary['full_summary'] = medium_summary.strip() if medium_summary else ""
+            final_summary['sections'] = section_data_list
+
+            # 키워드 처리 (고유 키워드 및 빈도 계산 - 선택적)
+            unique_keywords = list(set(all_keywords_list))
+            # keyword_counts = Counter(all_keywords_list)
+            final_summary['keywords'] = [{'term': kw} for kw in unique_keywords] # 기본 스키마 형식
+            # final_summary['keywords'] = [{'term': kw, 'frequency': keyword_counts[kw]} for kw in unique_keywords]
+
+            # sections_summary 생성 (기존 방식 활용)
+            final_summary['sections_summary'] = self._format_sections_summary(final_summary['sections'])
+
+            # 모델 및 전략 정보
+            final_summary['model'] = {
+                 'provider': self.llm_interface.provider,
+                 'model': self.llm_interface.model_name,
+                 'output_language': self.output_language
+            }
+            final_summary['summary_strategy_used'] = 'multi_chain'
+
+            logger.info("Successfully completed multi_chain summarization.")
+            return final_summary
+
+        except Exception as e:
+            logger.error(f"Error during multi_chain summarization: {str(e)}", exc_info=True)
+            return default_summary

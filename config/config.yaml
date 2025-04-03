@@ -25,7 +25,7 @@ output:
 # LLM 설정
 llm:
   provider: ollama  # ollama로 변경
-  model: gemma3:1b # gemma:3b 모델 사용
+  model: gemma3 # gemma:3b 모델 사용
   temperature: 0.3
   max_tokens: 4000
   max_token_response: 1000
@@ -71,7 +71,11 @@ prompt:
       "sections": [
         {
           "title": "섹션 제목",
-          "summary": ["상세 포인트 1", "상세 포인트 2", "상세 포인트 3", ...]
+          "summary": [
+            "상세 포인트 1", 
+            "상세 포인트 2",
+            "상세 포인트 3-5개 생성"
+          ]
         }
       ],
       "keywords": [
@@ -88,7 +92,7 @@ prompt:
 
 # 요약 전략
 summary:
-  strategy: default # Options: default, stuff, map_reduce, refine
+  strategy: multi_chain #default # Options: default, stuff, map_reduce, refine, multi_chain
   include_keywords: true
   highlight_keywords: true
   enable_chapters: true
@@ -171,9 +175,9 @@ notion:
     # "Keywords Original": # 필요 시 추가
     #  key: keywords_original
     #  type: rich_text
-    # "Summary Strategy": # Notion에 해당 속성이 없으므로 주석 처리 또는 삭제
-    #  key: summary_strategy
-    #  type: select
+    "Summary Strategy":
+      key: summary_strategy_used
+      type: select
 
 # 경로 설정
 paths:
@@ -196,3 +200,35 @@ api_keys:
   naver_client_secret: ${oc.env:NAVER_CLIENT_SECRET}
   google: ${oc.env:GOOGLE_API_KEY}
   google_search_engine: ${oc.env:GOOGLE_SEARCH_ENGINE_ID}
+
+# Multi-chain 프롬프트 설정
+multi_chain_section_structured: |
+  Analyze the following text chunk and extract the main section title, 3 to 5 detailed bullet points summarizing the key information, and relevant keywords. 
+  Respond ONLY with a single JSON object adhering *strictly* to this format:
+  {{
+    "title": "Extracted Section Title",
+    "summary_points": [
+      "Detailed bullet point 1",
+      "Detailed bullet point 2",
+      "Detailed bullet point 3-5"
+    ],
+    "keywords": ["keyword1", "keyword2", ...]
+  }}
+
+  TEXT CHUNK:
+  {text}
+
+multi_chain_medium_initial: |
+  Write a concise 3-5 sentence summary of the following text that captures all key points:
+  {text}
+
+multi_chain_medium_refine: |
+  You have created this summary so far:
+  {existing_summary}
+  
+  Now incorporate this additional information while maintaining exactly 3-5 sentences total:
+  {text}
+
+multi_chain_single_from_medium: |
+  Based *only* on the following text which is already a summary, provide a single, clear, and comprehensive sentence that encapsulates its main point:
+  {text}

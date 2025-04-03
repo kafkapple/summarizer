@@ -28,10 +28,17 @@
         *   첫 번째 청크를 요약한 다음, 후속 청크와 이전 요약을 함께 처리하여 점진적으로 요약을 개선합니다.
         *   **한계점:** `map_reduce`와 유사하게, 출력은 일반적으로 **단일 최종 요약 문자열**이며, 이는 결과 딕셔너리의 **`full_summary` 필드에만 배치**됩니다. `default` 전략이 제공하는 상세한 구조는 생성되지 않습니다 (다른 필드는 비어 있거나 기본값을 가짐).
     *   **Fallback 메커니즘:** 설정된 전략(`map_reduce`, `refine`)이 실패하면, 안정성을 위해 자동으로 `default` 전략으로 전환됩니다.
+    *   **`multi_chain` (실험적, LangChain 표준 조합):**
+        *   여러 표준 LangChain 체인을 조합하여 다단계 요약을 수행합니다:
+            1.  **섹션 수준 요약 (Map):** 각 텍스트 청크에 대해 LLMChain을 사용하여 제목, 3-5개의 상세 요약 bullet point, 키워드를 JSON 형식으로 추출합니다.
+            2.  **중간 수준 요약 (Refine):** 원본 문서 청크 전체에 RefineDocumentsChain을 적용하여 3-5 문장의 `full_summary`를 생성합니다.
+            3.  **한 문장 요약 (LLMChain):** 위에서 생성된 중간 수준 요약(`full_summary`)을 입력으로 사용하여, LLMChain으로 최종 `one_sentence_summary`를 생성합니다.
+        *   **출력 형식:** `one_sentence_summary`, `full_summary`를 생성합니다. `sections` 필드는 각 청크에서 추출된 제목과 요약 bullet point 리스트를 포함하는 구조화된 데이터가 됩니다. `keywords`는 모든 청크에서 추출된 키워드의 고유 목록입니다. `chapters` 필드는 생성되지 않습니다.
+        *   **특징:** 각 요약 수준(섹션, 중간, 한 문장)을 별도의 표준 LangChain 체인으로 처리하는 방식입니다. `default` 전략과는 다른 구조의 요약 결과를 제공할 수 있습니다.
 *   **구조화된 출력 (특히 `default` 전략 사용 시):** 다음과 같은 다양한 수준(High-level -> Low-level)의 요약을 생성하여 내용 이해를 돕습니다:
     *   **가장 높은 수준 (Highest-Level) - `one_sentence_summary`:** 전체 콘텐츠의 핵심 내용을 단 한 문장으로 압축하여 제공합니다. 가장 빠르게 주제를 파악할 수 있습니다.
     *   **고수준 (High-Level) - `core_summary`:** 전체 내용을 대표하는 3~5개의 핵심 주제를 식별하고, 각 주제에 대한 간결한 요약(주요 bullet point)을 제공하는 것을 목표로 합니다. 전체 구조를 빠르게 파악하는 데 유용합니다. (**참고:** 현재 버전에서는 모든 섹션의 bullet point가 결합될 수 있으며, Notion 출력 시 상세 구조 데이터(`chapters`/`sections`)를 참조하여 모든 챕터/섹션 제목과 해당 bullet point를 표시합니다. 향후 별도 LLM 호출을 통해 3~5개 핵심 주제 요약을 생성하도록 개선될 예정입니다.)
-    *   **중간 수준 (Mid-Level) - `full_summary`:** 전체 콘텐츠의 주요 내용을 자연스러운 문장으로 요약합니다. 보통 3-5 문장 또는 그 이상으로 구성되며, 주요 내용을 이해하는 데 충분한 정보를 제공합니다. (`default` 전략의 `refine` LLM 호출 또는 `map_reduce`/`refine` 체인의 최종 결과).
+    *   **중간 수준 (Mid-Level) - `full_summary`:** 전체 콘텐츠의 주요 내용을 자연스러운 문장으로 요약합니다. 보통 3-5 문장 또는 그 이상으로 구성되며, 주요 내용을 이해하는 데 충분한 정보를 제공합니다. (`default` 전략의 `refine` LLM 호출 또는 `map_reduce`/`refine`/`multi_chain` 체인의 최종 결과).
     *   **저수준 / 상세 구조 (Low-Level / Detailed Structure) - `detailed_summary_sections` (Notion 블록):** 원본 콘텐츠의 구조(챕터 또는 섹션)를 최대한 반영하여 각 단위의 제목(챕터의 경우 넘버링 포함)과 상세한 요약 내용을 순서대로 보여줍니다. 가장 자세한 내용을 구조적으로 파악할 때 유용합니다. (이 정보는 최종 요약 결과의 `sections` 및 `chapters` 키에 저장된 데이터를 기반으로 Notion 블록으로 구성됩니다.)
     *   **기타 정보:** `keywords` (키워드 목록), `sections` 및 `chapters` (상세 구조 데이터) 등도 결과에 포함됩니다.
 *   **Notion 연동:** 가져온 콘텐츠 정보 및 생성된 요약을 지정된 Notion 데이터베이스에 저장합니다.
