@@ -340,6 +340,17 @@ class NotionBase:
         children = []
         max_blocks = 95 # API 제한 고려 (헤더 포함)
 
+        # 0. TOC 블록 추가 (맨 처음)
+        if len(children) < max_blocks:
+            children.append({
+                "object": "block",
+                "type": "table_of_contents",
+                "table_of_contents": {}
+            })
+            # TOC와 다음 내용 사이에 공백 추가 (선택 사항)
+            if len(children) < max_blocks:
+                children.append(self.create_text_block(""))
+
         try:
             # 1. 썸네일 이미지 추가
             if data.get('thumbnail') and len(children) < max_blocks:
@@ -348,15 +359,7 @@ class NotionBase:
                     "image": {"type": "external", "external": {"url": data['thumbnail']}}
                 })
 
-            # 2. 설명 (Description) 추가
-            description = data.get('description')
-            if description and len(children) < max_blocks:
-                children.append(self.create_text_block("Description", "heading_2"))
-                # Description은 길 수 있으므로 여러 블록으로 나눌 수 있음 (단순화 위해 여기서는 한 블록)
-                if len(children) < max_blocks: children.append(self.create_text_block(description[:2000], "paragraph")) # 길이 제한
-                if len(children) < max_blocks: children.append(self.create_text_block("")) # 구분선
-
-            # 3. 요약 정보 추출
+            # 1. 요약 정보 추출 (Description 변수도 여기서 미리 정의)
             summary_dict = data.get('summary', {})
             if not isinstance(summary_dict, dict):
                 logger.warning("'summary' key is not a dictionary in organize_summary.")
@@ -367,53 +370,54 @@ class NotionBase:
                 keywords_list = summary_dict.get('keywords', [])
                 highlight_keywords_terms = [kw.get('term', '') for kw in keywords_list if isinstance(kw, dict) and kw.get('term')]
 
-            # 4. 한 문장 요약
+            # 2. 한 문장 요약
             one_sentence = summary_dict.get('one_sentence_summary')
             if one_sentence and len(children) < max_blocks:
                 children.append(self.create_text_block("One Sentence Summary", "heading_2"))
                 if len(children) < max_blocks: children.append(self.create_text_block(one_sentence, "paragraph", keywords=highlight_keywords_terms))
                 if len(children) < max_blocks: children.append(self.create_text_block(""))
 
-            # 5. 핵심 요약 (Core Summary)
-            core_summary = summary_dict.get('core_summary')
-            if core_summary and len(children) < max_blocks:
-                children.append(self.create_text_block("Core Summary", "heading_2"))
-                # core_summary도 길 수 있으므로 나누기 (단순화 위해 여기서는 한 블록)
-                if len(children) < max_blocks: children.append(self.create_text_block(core_summary[:2000], "paragraph", keywords=highlight_keywords_terms))
-                if len(children) < max_blocks: children.append(self.create_text_block(""))
-
-            # 6. 전체 요약 (Full Summary)
+            # 3. 전체 요약 (Full Summary) - 위치 이동
             full_summary = summary_dict.get('full_summary')
             if full_summary and len(children) < max_blocks:
                 children.append(self.create_text_block("Full Summary", "heading_2"))
-                # full_summary도 길 수 있으므로 나누기 (단순화 위해 여기서는 한 블록)
                 if len(children) < max_blocks: children.append(self.create_text_block(full_summary[:2000], "paragraph", keywords=highlight_keywords_terms))
                 if len(children) < max_blocks: children.append(self.create_text_block(""))
 
-            # 7. 섹션별 상세 요약 (JSON의 sections 구조 반영)
+            # 4. 요약 전략
+            summary_strategy = summary_dict.get('summary_strategy_used', data.get('summary_strategy'))
+
+            # 5. 섹션별 상세 요약 (Detailed Summary Sections) - 챕터/섹션 넘버링 추가
             sections = summary_dict.get('sections', [])
             chapters = summary_dict.get('chapters', []) if self.cfg.get('enable_chapters', True) else []
-            sections_summary_str = summary_dict.get('sections_summary', '')
 
-            if sections and isinstance(sections, list): # 구조화된 sections 리스트 확인
-                if len(children) < max_blocks:
-                     children.append(self.create_text_block("Detailed Summary Sections", "heading_1"))
+            has_detailed_content = (chapters and isinstance(chapters, list)) or \
+                                   (sections and isinstance(sections, list))
+
+            if has_detailed_content and len(children) < max_blocks:
+                children.append(self.create_text_block("Detailed Summary Sections", "heading_1"))
 
                 # 챕터/섹션 처리 (챕터 우선)
                 if chapters and isinstance(chapters, list):
                     for chap_idx, chapter in enumerate(chapters):
                         if len(children) >= max_blocks: break
                         if isinstance(chapter, dict):
-                            chap_title = chapter.get("chapter_title", f"Chapter {chap_idx+1}")
-                            if len(children) < max_blocks: children.append(self.create_text_block(chap_title, "heading_2", keywords=highlight_keywords_terms))
+                            # 챕터 제목 (heading_2) - 이미 넘버링 되어 있음 (이전 단계에서)
+                            chap_title_display = chapter.get('numbered_title', f"{chap_idx+1}. {chapter.get('chapter_title', f'Chapter {chap_idx+1}')}")
+                            if len(children) < max_blocks: children.append(self.create_text_block(chap_title_display, "heading_2", keywords=highlight_keywords_terms))
 
                             chapter_sections = chapter.get('sections', [])
                             if isinstance(chapter_sections, list):
+                                section_counter = 1 # 챕터 내 섹션 넘버링용
                                 for sec_idx, segment in enumerate(chapter_sections):
                                     if len(children) >= max_blocks: break
                                     if isinstance(segment, dict):
                                         sec_title = segment.get("title", f"Section {sec_idx+1}")
-                                        if len(children) < max_blocks: children.append(self.create_text_block(sec_title, "heading_3", keywords=highlight_keywords_terms))
+                                        # 섹션 제목 (heading_3) - 넘버링 추가
+                                        sec_title_display = f"{section_counter}. {sec_title}"
+                                        if len(children) < max_blocks: children.append(self.create_text_block(sec_title_display, "heading_3", keywords=highlight_keywords_terms))
+                                        section_counter += 1
+
                                         summary_content = segment.get('summary', [])
                                         if isinstance(summary_content, list):
                                             for item in summary_content:
@@ -428,10 +432,13 @@ class NotionBase:
 
                 else: # 챕터 없이 섹션만 처리 (JSON 구조와 동일하게)
                     for i, segment in enumerate(sections):
+                        # 챕터 없을 시, 섹션 제목 (heading_2) 에 넘버링 추가
                         if len(children) >= max_blocks: break
                         if isinstance(segment, dict):
                             sec_title = segment.get("title", f"Section {i+1}")
-                            if len(children) < max_blocks: children.append(self.create_text_block(sec_title, "heading_2", keywords=highlight_keywords_terms))
+                            sec_title_display = f"{i+1}. {sec_title}" # 챕터 없을 땐 heading_2에 넘버링
+                            if len(children) < max_blocks: children.append(self.create_text_block(sec_title_display, "heading_2", keywords=highlight_keywords_terms))
+
                             summary_content = segment.get('summary', [])
                             if isinstance(summary_content, list):
                                 for item in summary_content:
@@ -443,13 +450,8 @@ class NotionBase:
                             if len(children) < max_blocks: children.append(self.create_text_block("")) # 섹션 간 공백
                         if len(children) >= max_blocks: break # 섹션 루프 탈출
 
-            elif sections_summary_str and isinstance(sections_summary_str, str): # 문자열 형태의 sections_summary만 있을 때
-                if len(children) < max_blocks: children.append(self.create_text_block("Sections Summary", "heading_1"))
-                if len(children) < max_blocks: children.append(self.create_text_block(sections_summary_str[:2000], "paragraph", keywords=highlight_keywords_terms))
-                if len(children) < max_blocks: children.append(self.create_text_block(""))
-
-            # 8. 키워드
-            keywords_list = summary_dict.get('keywords', []) # 위에서 이미 정의했지만 명확성을 위해 다시 가져옴
+            # 6. 키워드
+            keywords_list = summary_dict.get('keywords', [])
             if keywords_list and len(children) < max_blocks:
                 children.append(self.create_text_block("Keywords", "heading_2"))
                 kw_strings = []
@@ -465,12 +467,17 @@ class NotionBase:
                     children.append(self.create_bulleted_list_item(", ".join(kw_strings)))
                 if len(children) < max_blocks: children.append(self.create_text_block(""))
 
-            # 9. 요약 전략
-            summary_strategy = summary_dict.get('summary_strategy_used', data.get('summary_strategy'))
+            # 7. 요약 전략
             if summary_strategy and len(children) < max_blocks:
                 children.append(self.create_text_block("Summary Strategy Used", "heading_2"))
                 if len(children) < max_blocks: children.append(self.create_text_block(summary_strategy, "paragraph"))
                 if len(children) < max_blocks: children.append(self.create_text_block(""))
+
+            # 8. 설명 (Description)
+            description = data.get('description')
+            if description and len(children) < max_blocks:
+                children.append(self.create_text_block("Description", "heading_2"))
+                if len(children) < max_blocks: children.append(self.create_text_block(description[:2000], "paragraph")) # 길이 제한
 
         except Exception as e:
             logger.error(f'Error organizing summary content: {e}', exc_info=True)

@@ -25,7 +25,7 @@ output:
 # LLM 설정
 llm:
   provider: ollama  # ollama로 변경
-  model: gemma3 # gemma:3b 모델 사용
+  model: gemma3:1b # gemma:3b 모델 사용
   temperature: 0.3
   max_tokens: 4000
   max_token_response: 1000
@@ -46,24 +46,25 @@ few_shot:
 # 프롬프트 설정
 prompt:
   system_content: |
-    You are a professional content summarizer. Your task is to analyze the given content and create a comprehensive summary in {language}.
-    IMPORTANT: You MUST provide the summary in Korean (한국어) if the target language is Korean.
-    
-    Guidelines:
-    1. Extract key information and main points
-    2. Identify important keywords and concepts
-    3. Organize the content into logical sections
-    4. Provide a concise one-sentence summary
-    5. Maintain the original meaning while being clear and concise
-    6. If the text contains chapters or sections, preserve their structure
-    7. Highlight any important quotes or key phrases
-    8. Include relevant statistics or data points
-    9. Note any significant conclusions or recommendations
-    10. If the text is technical, explain complex concepts in simpler terms
+    You are a meticulous, detail-oriented, and systematic **Summary Expert**. Your primary goal is to analyze the provided content thoroughly and generate a well-structured and comprehensive summary in **{language}**. You don't miss important details and present information logically.
+    IMPORTANT: If the target language is Korean, your entire response MUST be in **Korean (한국어)**.
+
+    Core Objectives:
+    1.  **Identify Key Information:** Extract the most crucial information, main arguments, and core themes.
+    2.  **Structure Logically:** Organize the summary into logical sections, reflecting the original content's structure (like chapters or distinct topics) where possible.
+    3.  **Summarize Concisely:** Create a brief one-sentence overview capturing the absolute essence.
+    4.  **Be Accurate & Clear:** Ensure the summary accurately reflects the original meaning using clear and understandable language.
+    5.  **Extract Keywords:** Identify and list the most relevant keywords or concepts.
+
+    Additional Considerations (Apply where relevant):
+    *   If the content includes specific data, statistics, or notable quotes, incorporate them meaningfully.
+    *   If there are clear conclusions or recommendations, highlight them.
+    *   For technical content, explain complex terms simply if necessary for understanding.
 
   instruction_output: |
-    IMPORTANT: You MUST provide your response in Korean (한국어) if the target language is Korean.
-    Please format your response as a JSON object with the following structure:
+    --- OUTPUT FORMAT INSTRUCTIONS --- 
+    **CRITICAL:** Your response MUST be a single, valid JSON object. Do not include any text before or after the JSON structure.
+    The JSON object MUST adhere *strictly* to the following structure:
     {
       "one_sentence_summary": "한 문장 요약",
       "full_summary": ["주요 포인트 1", "주요 포인트 2", ...],
@@ -80,6 +81,10 @@ prompt:
         }
       ]
     }
+
+  refine_instruction: |  # 추가: refine 작업 전용 지시사항
+    Based on the provided context, generate a final one-sentence summary and a comprehensive full summary **in 3 to 5 sentences** in {language}.
+    Output ONLY in JSON format with keys 'one_sentence_summary' and 'full_summary'.
 
 # 요약 전략
 summary:
@@ -115,21 +120,24 @@ notion:
     Duration:
       key: duration
       type: rich_text # number -> rich_text 변경
-    "Like Count":
+    View Count:
+      key: view_count
+      type: number
+    Like Count:
       key: like_count
       type: number
-    "Comment Count":
+    Comment Count:
       key: comment_count
       type: number
-    Chapters:
-      key: chapters # 실제 chapters 데이터를 사용할 경우 키 확인 필요 (summary.sections_summary 사용 가능성)
-      type: rich_text
-    "Output Language":
+    # Chapters:
+    #   key: chapters # 실제 chapters 데이터를 사용할 경우 키 확인 필요 (summary.sections_summary 사용 가능성)
+    #   type: rich_text
+    Output Language:
       key: output_language # data['summary']['model']['output_language'] 에서 가져오도록 base.py가 처리
       type: select
-    Keywords:
-      key: keywords # data['summary']['keywords'] 에서 가져오도록 base.py가 처리
-      type: multi_select # 키워드는 여러 개일 수 있으므로 multi_select 유지 (Notion 타입 확인 필요)
+    # Keywords:
+    #   key: keywords # data['summary']['keywords'] 에서 가져오도록 base.py가 처리
+    #   type: multi_select # 키워드는 여러 개일 수 있으므로 multi_select 유지 (Notion 타입 확인 필요)
     Summary:
       key: summary # data['summary']['full_summary'] 에서 가져오도록 base.py가 처리
       type: rich_text

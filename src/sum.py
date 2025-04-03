@@ -493,9 +493,6 @@ class LangChainSummarizer:
             # 2. 섹션별 요약 생성 (기존 방식 유지)
             sections_summary_str = self._format_sections_summary(all_sections)
             
-            # 3. 핵심 주제 추출 (기존 방식 유지)
-            core_summary_str = self._format_core_summary(all_sections)
-
             # 4. 최종 요약 생성 (새로운 LLM 호출)
             final_one_sentence_summary = ""
             final_full_summary = ""
@@ -553,7 +550,6 @@ class LangChainSummarizer:
             result = {
                 'sections_summary': sections_summary_str,
                 'full_summary': final_full_summary, # 최종 LLM 결과 사용
-                'core_summary': core_summary_str, # 기존 방식 유지
                 'one_sentence_summary': final_one_sentence_summary, # 최종 LLM 결과 사용
                 'keywords': all_keywords,
                 'sections': all_sections, # 병합된 섹션 정보 유지
@@ -664,19 +660,16 @@ class LangChainSummarizer:
             # 2. 전체 요약 (중간 수준)
             'full_summary': merged_summary.get('full_summary', ''),
             
-            # 3. 핵심 주제 (간단한 요약)
-            'core_summary': merged_summary.get('core_summary', ''),
-            
-            # 4. 한 문장 요약 (가장 간단)
+            # 3. 한 문장 요약 (가장 간단)
             'one_sentence_summary': merged_summary.get('one_sentence_summary', ''),
             
-            # 5. 키워드
+            # 4. 키워드
             'keywords': merged_summary.get('keywords', []),
             
-            # 6. 섹션 정보
+            # 5. 섹션 정보
             'sections': merged_summary.get('sections', []),
             
-            # 7. 모델 정보
+            # 6. 모델 정보
             'model': merged_summary.get('model', {})
         }
         

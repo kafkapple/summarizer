@@ -5,7 +5,6 @@ def get_default_summary_schema() -> Dict[str, Any]:
     return {
         'one_sentence_summary': "",
         'full_summary': "",
-        'core_summary': "",
         'sections_summary': "",
         'keywords': [],           # List of dicts, e.g., [{'term': 'kw1'}, ...]
         'sections': [],           # List of dicts, e.g., [{'title': 't1', 'summary': 's1'}, ...]
@@ -26,7 +25,6 @@ def get_minimal_summary_schema() -> Dict[str, Any]:
     schema = get_default_summary_schema().copy() # Use copy to avoid modifying original
     
     # Fields often not present in minimal summaries
-    schema.pop('core_summary', None)
     schema.pop('sections_summary', None)
     schema.pop('keywords', None)
     schema.pop('sections', None)
