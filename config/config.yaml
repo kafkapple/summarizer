@@ -26,7 +26,7 @@ output:
 llm:
   provider: ollama  # ollama로 변경
   model: gemma3 # gemma:3b 모델 사용
-  temperature: 0.3
+  temperature: 0.2
   max_tokens: 4000
   max_token_response: 1000
   min_token_response: 500
@@ -38,6 +38,20 @@ llm:
     max_tokens: 4000
     prompt_token: 4000
 
+  # --- 재시도 설정 --- #
+  retry:
+    max_retries: 3      # 최대 재시도 횟수
+    initial_delay: 1    # 초기 대기 시간 (초)
+    backoff_factor: 2   # 재시도 시 대기 시간 증가 배수 (예: 1초, 2초, 4초...)
+
+# 요약 전략
+summary:
+  strategy: multi_chain #default # multi_chain # default, stuff, map_reduce, refine, multi_chain
+  include_keywords: true
+  highlight_keywords: true
+  enable_chapters: true
+  include_full_text: false
+  prompt_template: ${prompt.system_content}
 # Few-shot 설정
 few_shot:
   enabled: false
@@ -90,14 +104,40 @@ prompt:
     Based on the provided context, generate a final one-sentence summary and a comprehensive full summary **in 3 to 5 sentences** in {language}.
     Output ONLY in JSON format with keys 'one_sentence_summary' and 'full_summary'.
 
-# 요약 전략
-summary:
-  strategy: multi_chain #default # Options: default, stuff, map_reduce, refine, multi_chain
-  include_keywords: true
-  highlight_keywords: true
-  enable_chapters: true
-  include_full_text: false
-  prompt_template: ${prompt.system_content}
+  # --- Multi-Chain Strategy Prompts --- #
+  multi_chain_section_structured: |
+    Analyze the following text chunk and extract the main section title, 3 to 5 detailed bullet points summarizing the key information, and relevant keywords. 
+    Respond ONLY with a single JSON object adhering *strictly* to this format:
+    {{
+      "title": "Extracted Section Title",
+      "summary_points": [
+        "Detailed bullet point 1",
+        "Detailed bullet point 2",
+        "Detailed bullet point 3-5"
+      ],
+      "keywords": ["keyword1", "keyword2", ...]
+    }}
+
+    TEXT CHUNK:
+    {text}
+
+  multi_chain_medium_initial: |
+    Write a concise 3-5 sentence summary of the following text that captures all key points:
+    {text}
+
+  multi_chain_medium_refine: |
+    You have created this summary so far:
+    {existing_summary}
+    
+    Now incorporate this additional information while maintaining exactly 3-5 sentences total.
+    **IMPORTANT:** Output ONLY the refined summary text, without any introductory phrases or explanations.
+    {text}
+
+  multi_chain_single_from_medium: |
+    Based *only* on the following text which is already a summary, provide a single, clear, and comprehensive sentence that encapsulates its main point:
+    {text}
+  # --- End of Multi-Chain Prompts ---
+
 
 # Notion 설정
 notion:
@@ -200,35 +240,3 @@ api_keys:
   naver_client_secret: ${oc.env:NAVER_CLIENT_SECRET}
   google: ${oc.env:GOOGLE_API_KEY}
   google_search_engine: ${oc.env:GOOGLE_SEARCH_ENGINE_ID}
-
-# Multi-chain 프롬프트 설정
-multi_chain_section_structured: |
-  Analyze the following text chunk and extract the main section title, 3 to 5 detailed bullet points summarizing the key information, and relevant keywords. 
-  Respond ONLY with a single JSON object adhering *strictly* to this format:
-  {{
-    "title": "Extracted Section Title",
-    "summary_points": [
-      "Detailed bullet point 1",
-      "Detailed bullet point 2",
-      "Detailed bullet point 3-5"
-    ],
-    "keywords": ["keyword1", "keyword2", ...]
-  }}
-
-  TEXT CHUNK:
-  {text}
-
-multi_chain_medium_initial: |
-  Write a concise 3-5 sentence summary of the following text that captures all key points:
-  {text}
-
-multi_chain_medium_refine: |
-  You have created this summary so far:
-  {existing_summary}
-  
-  Now incorporate this additional information while maintaining exactly 3-5 sentences total:
-  {text}
-
-multi_chain_single_from_medium: |
-  Based *only* on the following text which is already a summary, provide a single, clear, and comprehensive sentence that encapsulates its main point:
-  {text}

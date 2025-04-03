@@ -1,8 +1,10 @@
 import logging
+import asyncio # asyncio 추가
+import time # time 추가
 from typing import Dict, Optional
 
 from langchain_openai import ChatOpenAI
-from langchain_community.llms import Ollama
+from langchain_ollama.chat_models import ChatOllama
 from langchain.llms.base import BaseLLM
 from omegaconf import DictConfig
 import json
@@ -59,7 +61,7 @@ class LLMInterface:
             elif self.provider == 'ollama':
                 ollama_config = self.cfg.llm.get('ollama', {})
                 base_url = ollama_config.get('url', 'http://localhost:11434')
-                return Ollama(
+                return ChatOllama(
                     model=self.model_name,
                     temperature=self.temperature,
                     base_url=base_url
@@ -83,115 +85,148 @@ class LLMInterface:
             raise RuntimeError("Failed to initialize any LLM provider.") from e
 
     async def invoke_llm(self, chunk: str, task_type: str = "summarize_chunk", title: Optional[str] = None) -> Optional[Dict]:
-        """LLM을 호출하여 작업을 수행하고 JSON으로 파싱합니다."""
-        try:
-            formatted_system_content = self.system_content.format(language=self.output_language_full)
-            user_content = chunk
-            instruction = ""
+        """LLM을 호출하여 작업을 수행하고 JSON으로 파싱합니다. (재시도 로직 포함)"""
 
-            # 작업 유형에 따라 instruction 결정
-            if task_type == "summarize_chunk":
-                instruction = self.instruction_output
-            elif task_type == "refine":
-                instruction = self.refine_instruction.format(language=self.output_language_full)
-                # Refinement 시 user_content 앞에 제목 추가 (컨텍스트 명확화)
-                user_content = f"Original Title: {title}\n\nContext to refine:\n{chunk}"
-            else:
-                logger.warning(f"Unknown task_type: {task_type}. Using default summarization instruction.")
-                instruction = self.instruction_output
+        max_retries = self.cfg.llm.retry.get('max_retries', 3)
+        initial_delay = self.cfg.llm.retry.get('initial_delay', 1)
+        backoff_factor = self.cfg.llm.retry.get('backoff_factor', 2)
+        current_delay = float(initial_delay) # float 형으로 변환
 
-            # 로깅
-            if self.debug_llm:
-                debug_logger.debug(f"===== LLM Invocation (Task: {task_type}) =====")
-                debug_logger.debug(f"Input Content (first 100 chars): {user_content[:100]}...") # Use user_content for logging input
-                debug_logger.debug(f"System Content: {formatted_system_content}")
-                debug_logger.debug(f"Instruction: {instruction}")
-                debug_logger.debug(f"Temperature: {self.temperature}")
-                debug_logger.debug(f"Max Response Tokens: {self.max_token_response}")
-                print(f"\n[DEBUG] Sending Request to LLM (Task: {task_type})...")
+        response_text = None
+        result_obj = None
 
-            # 최종 프롬프트/메시지 구성 및 LLM 호출
-            if isinstance(self.llm, ChatOpenAI):
-                 messages = [
-                     {"role": "system", "content": formatted_system_content},
-                     {"role": "user", "content": user_content},
-                 ]
-                 # Add instruction as a separate system message if it exists
-                 if instruction:
-                     messages.append({"role": "system", "content": instruction})
+        formatted_system_content = self.system_content.format(language=self.output_language_full)
+        user_content = chunk
+        instruction = ""
 
-                 result_obj = await self.llm.ainvoke(messages)
-                 response_text = result_obj.content if hasattr(result_obj, 'content') else str(result_obj)
+        # 작업 유형에 따라 instruction 결정
+        if task_type == "summarize_chunk":
+            instruction = self.instruction_output
+        elif task_type == "refine":
+            instruction = self.refine_instruction.format(language=self.output_language_full)
+            user_content = f"Original Title: {title}\n\nContext to refine:\n{chunk}"
+        else:
+            logger.warning(f"Unknown task_type: {task_type}. Using default summarization instruction.")
+            instruction = self.instruction_output
 
-            elif isinstance(self.llm, Ollama):
-                 # Combine system content, user content, and instruction into a single prompt for Ollama
-                 prompt = f"""{formatted_system_content}
+        # 로깅 (반복문 밖에서 한 번만 수행)
+        if self.debug_llm:
+            debug_logger.debug(f"===== LLM Invocation Attempt (Task: {task_type}) =====")
+            debug_logger.debug(f"Input Content (first 100 chars): {user_content[:100]}...")
+            debug_logger.debug(f"System Content: {formatted_system_content}")
+            debug_logger.debug(f"Instruction: {instruction}")
+            debug_logger.debug(f"Temperature: {self.temperature}")
+            debug_logger.debug(f"Max Response Tokens: {self.max_token_response}")
+            debug_logger.debug(f"Retry Config: Max={max_retries}, Delay={initial_delay}, Backoff={backoff_factor}")
+            print(f"\n[DEBUG] Preparing LLM Request (Task: {task_type})...")
 
-{user_content}
-
-{instruction}""" # Ensure triple quotes for multi-line f-string
-                 result_obj = await self.llm.ainvoke(prompt)
-                 response_text = str(result_obj)
-            else:
-                 # Generic fallback (might need refinement based on the BaseLLM implementation)
-                 prompt = f"""{formatted_system_content}
-
-{user_content}
-
-{instruction}""" # Ensure triple quotes for multi-line f-string
-                 result_obj = await self.llm.ainvoke(prompt)
-                 response_text = str(result_obj)
-
-
-            if self.debug_llm:
-                debug_logger.debug("----- LLM Raw Response -----")
-                debug_logger.debug(f"Response type: {type(result_obj)}")
-                debug_logger.debug(f"Raw response text: {response_text}")
-                print("[DEBUG] Received Response from LLM.")
-
-            if not response_text or not response_text.strip():
-                logger.error("LLM response is empty.")
+        # --- 재시도 루프 시작 ---
+        for attempt in range(max_retries + 1):
+            try:
                 if self.debug_llm:
-                    debug_logger.debug("Empty response detected")
-                # Return default structure only if the task expected a dict
-                return self._default_summary_structure(task_type) if task_type != "refine" else {"full_summary": "", "one_sentence_summary": ""}
+                    print(f"[DEBUG] Attempt {attempt + 1}/{max_retries + 1}: Sending request to LLM...")
 
+                # 최종 프롬프트/메시지 구성 및 LLM 호출
+                if isinstance(self.llm, ChatOpenAI):
+                     messages = [
+                         {"role": "system", "content": formatted_system_content},
+                         {"role": "user", "content": user_content},
+                     ]
+                     if instruction:
+                         messages.append({"role": "system", "content": instruction})
+                     result_obj = await self.llm.ainvoke(messages)
+                     response_text = result_obj.content if hasattr(result_obj, 'content') else str(result_obj)
 
-            # JSON Parsing (Only if the task expected JSON)
-            parsed_result = None
-            if task_type == "summarize_chunk": # Assume default chunk summary needs JSON
-                 parsed_result = self._process_json_response(response_text)
-            elif task_type == "refine": # Refine task also expects specific JSON keys
-                 parsed_result = self._process_json_response(response_text)
-                 # Ensure refine specific keys exist, even if empty
-                 if parsed_result:
-                     parsed_result.setdefault('one_sentence_summary', '')
-                     parsed_result.setdefault('full_summary', '')
-                 else: # If parsing failed for refine, return empty dict for those keys
-                     parsed_result = {'one_sentence_summary': '', 'full_summary': ''}
-            else: # For unknown tasks or simple string results
-                 parsed_result = {"full_summary": response_text} # Store raw string
+                elif isinstance(self.llm, ChatOllama):
+                     prompt = f"""{formatted_system_content}
 
+{user_content}
 
-            if not parsed_result:
-                 # Use appropriate default based on task
-                 default_structure = self._default_summary_structure(task_type) if task_type != "refine" else {"full_summary": "", "one_sentence_summary": ""}
-                 logger.warning("Parsing failed or task didn't expect JSON. Returning default/raw structure.")
-                 return default_structure
+{instruction}""" # Ensure triple quotes for multi-line f-string
+                     result_obj = await self.llm.ainvoke(prompt)
+                     if hasattr(result_obj, 'content'):
+                          response_text = result_obj.content
+                     else:
+                          response_text = str(result_obj) # Fallback
+                else:
+                     prompt = f"""{formatted_system_content}
 
+{user_content}
+
+{instruction}""" # Ensure triple quotes for multi-line f-string
+                     result_obj = await self.llm.ainvoke(prompt)
+                     response_text = str(result_obj)
+
+                if self.debug_llm:
+                    print(f"[DEBUG] Attempt {attempt + 1}: Received response.")
+                    debug_logger.debug(f"----- LLM Raw Response (Attempt {attempt + 1}) -----")
+                    debug_logger.debug(f"Response type: {type(result_obj)}")
+                    debug_logger.debug(f"Raw response text: {response_text}")
+
+                # 응답 유효성 검사
+                if response_text and response_text.strip():
+                    if self.debug_llm: print(f"[DEBUG] Attempt {attempt + 1}: Success! Response is not empty.")
+                    break # 성공 시 루프 탈출
+                else:
+                    # 응답이 비었지만 오류는 아님
+                    logger.warning(f"LLM returned empty response on attempt {attempt + 1}.")
+                    if self.debug_llm: print(f"[DEBUG] Attempt {attempt + 1}: Failed! Response is empty.")
+                    # 마지막 시도였으면 response_text는 None 또는 빈 문자열 상태 유지
+                    if attempt == max_retries:
+                         logger.error(f"LLM returned empty response after {max_retries + 1} attempts.")
+                         # response_text 는 이미 None 또는 빈 상태이므로 추가 작업 없음
+
+            except Exception as e:
+                logger.warning(f"Error during LLM invocation on attempt {attempt + 1}: {str(e)}")
+                if self.debug_llm:
+                    print(f"[DEBUG] Attempt {attempt + 1}: Failed! Exception: {e}")
+                    debug_logger.warning(f"LLM invocation error (Attempt {attempt + 1}): {str(e)}", exc_info=True)
+                # 마지막 시도였으면 루프 종료
+                if attempt == max_retries:
+                    logger.error(f"LLM invocation failed after {max_retries + 1} attempts due to error: {str(e)}")
+                    response_text = None # 확실하게 실패 처리
+                    break # 루프 탈출
+
+            # 재시도 전 대기 (마지막 시도 제외)
+            if attempt < max_retries:
+                logger.info(f"Retrying LLM call in {current_delay:.2f} seconds... (Attempt {attempt + 2}/{max_retries + 1})")
+                if self.debug_llm: print(f"[DEBUG] Waiting {current_delay:.2f} seconds before next attempt...")
+                await asyncio.sleep(current_delay)
+                current_delay *= backoff_factor
+        # --- 재시도 루프 종료 ---
+
+        # 여기부터는 기존 로직과 동일 (response_text 처리)
+        if not response_text or not response_text.strip():
+            logger.error("LLM response is empty after all retries.")
             if self.debug_llm:
-                debug_logger.debug("----- Parsed/Processed Response -----")
-                debug_logger.debug(f"Final result for task '{task_type}': {json.dumps(parsed_result, ensure_ascii=False, indent=2)}")
-
-            return parsed_result
-
-        except Exception as e:
-            logger.error(f"Error during LLM invocation (Task: {task_type}): {str(e)}")
-            if self.debug_llm:
-                debug_logger.error(f"LLM invocation error (Task: {task_type}): {str(e)}", exc_info=True)
-            # Return default structure based on task type
+                 debug_logger.debug("Empty response after retries detected")
+            # 작업 유형에 따라 기본 구조 반환
             return self._default_summary_structure(task_type) if task_type != "refine" else {"full_summary": "", "one_sentence_summary": ""}
 
+        # JSON Parsing (Only if the task expected JSON)
+        parsed_result = None
+        if task_type == "summarize_chunk" or task_type == "refine": # 두 태스크 모두 JSON 필요
+            parsed_result = self._process_json_response(response_text)
+            if task_type == "refine": # Refine 특정 키 확인/추가
+                if parsed_result:
+                    parsed_result.setdefault('one_sentence_summary', '')
+                    parsed_result.setdefault('full_summary', '')
+                else:
+                    parsed_result = {'one_sentence_summary': '', 'full_summary': ''}
+        else:
+            parsed_result = {"full_summary": response_text}
+
+        if not parsed_result:
+             # 작업 유형에 따라 기본 구조 반환
+             default_structure = self._default_summary_structure(task_type) if task_type != "refine" else {"full_summary": "", "one_sentence_summary": ""}
+             logger.warning("Parsing failed or task didn't expect JSON. Returning default/raw structure.")
+             return default_structure
+
+        if self.debug_llm:
+            debug_logger.debug("----- Final Parsed/Processed Response -----")
+            debug_logger.debug(f"Final result for task '{task_type}': {json.dumps(parsed_result, ensure_ascii=False, indent=2)}")
+
+        return parsed_result
 
     def _process_json_response(self, response: str) -> Optional[Dict]:
         """LLM 응답 문자열을 JSON으로 파싱합니다."""
